@@ -8,6 +8,8 @@ import 'package:intl/intl.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart'; // For TargetPlatform
+import 'package:permission_handler/permission_handler.dart';
 
 void main() => runApp(const MaterialApp(
       home: MainNavigation(),
@@ -139,6 +141,12 @@ class _GPSDashboardState extends State<GPSDashboard> with AutomaticKeepAliveClie
       if (permission == LocationPermission.denied) return;
     }
 
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      if (await Permission.notification.isDenied) {
+        await Permission.notification.request();
+      }
+    }
+
     setState(() {
       isTracking = true;
       _routePoints.clear();
@@ -149,11 +157,37 @@ class _GPSDashboardState extends State<GPSDashboard> with AutomaticKeepAliveClie
       _timer = Timer.periodic(const Duration(seconds: 1), _updateTime);
     });
 
-    _positionStream = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
+    late LocationSettings locationSettings;
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      locationSettings = AndroidSettings(
         accuracy: LocationAccuracy.high,
         distanceFilter: 10,
-      )
+        forceLocationManager: true,
+        intervalDuration: const Duration(seconds: 1),
+        foregroundNotificationConfig: const ForegroundNotificationConfig(
+          notificationText: "Ride is ongoing in the background",
+          notificationTitle: "SwiftRide Tracker",
+          enableWakeLock: true,
+          notificationIcon: AndroidResource(name: 'play_arrow', defType: 'drawable'),
+        ),
+      );
+    } else if (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.macOS) {
+      locationSettings = AppleSettings(
+        accuracy: LocationAccuracy.high,
+        activityType: ActivityType.fitness,
+        distanceFilter: 10,
+        pauseLocationUpdatesAutomatically: true,
+        showBackgroundLocationIndicator: true,
+      );
+    } else {
+      locationSettings = const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 10,
+      );
+    }
+
+    _positionStream = Geolocator.getPositionStream(
+      locationSettings: locationSettings
     ).listen((pos) {
       if (!mounted) return;
 
@@ -188,7 +222,8 @@ class _GPSDashboardState extends State<GPSDashboard> with AutomaticKeepAliveClie
         'date': DateTime.now().toIso8601String(),
         'distance': totalDistance,
         'topSpeed': topSpeed,
-        'duration': _elapsedTime, // Saved formatted duration
+        'duration': _elapsedTime,
+        'route': _routePoints.map((p) => [p.latitude, p.longitude]).toList(),
       }));
     } catch (e) {
       debugPrint("Save error: $e");
@@ -293,7 +328,11 @@ class HistoryPageState extends State<HistoryPage> {
     } else {
       final files = dir.listSync().where((f) => f.path.endsWith('.json') && !f.path.contains('archive_')).toList();
       final List<dynamic> temp = [];
-      for (var f in files) temp.add(jsonDecode(await File(f.path).readAsString()));
+      for (var f in files) {
+        Map<String, dynamic> data = jsonDecode(await File(f.path).readAsString());
+        data['filePath'] = f.path;
+        temp.add(data);
+      }
       setState(() {
         rides = temp;
         rides.sort((a, b) => b['date'].compareTo(a['date']));
@@ -320,23 +359,52 @@ class HistoryPageState extends State<HistoryPage> {
           ? const Center(child: Text("No records yet.", style: TextStyle(color: Colors.white24)))
           : ListView.builder(
               itemCount: rides.length,
-              itemBuilder: (c, i) => Container(
-                margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                padding: const EdgeInsets.all(18),
-                decoration: BoxDecoration(color: const Color(0xFF1A1A1A), borderRadius: BorderRadius.circular(15)),
-                child: Row(
-                  children: [
-                    const Icon(Icons.history, color: Colors.orangeAccent),
-                    const SizedBox(width: 15),
-                    Expanded(child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(DateFormat('MMM dd, yyyy • hh:mm a').format(DateTime.parse(rides[i]['date'])), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                        Text("${(rides[i]['distance']/1000).toStringAsFixed(2)} km • ${rides[i]['duration'] ?? '--:--'}", style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                      ],
-                    )),
-                    Text("${rides[i]['topSpeed'].toStringAsFixed(1)} km/h", style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                  ],
+              itemBuilder: (c, i) => GestureDetector(
+                onTap: () {
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => RideDetailsPage(rideData: rides[i])));
+                },
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(color: const Color(0xFF1A1A1A), borderRadius: BorderRadius.circular(15)),
+                  child: Row(
+                    children: [
+                      Expanded(child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(DateFormat('MMM dd, yyyy • hh:mm a').format(DateTime.parse(rides[i]['date'])), style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                          const SizedBox(height: 8),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.baseline,
+                            textBaseline: TextBaseline.alphabetic,
+                            children: [
+                              Text("${(rides[i]['distance']/1000).toStringAsFixed(2)}", style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w900)),
+                              const Text(" KM", style: TextStyle(color: Colors.orangeAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+                              const SizedBox(width: 15),
+                              Text("${rides[i]['duration'] ?? '--:--'}", style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+                              const Text(" HRS", style: TextStyle(color: Colors.orangeAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                        ],
+                      )),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text("${rides[i]['topSpeed'].toStringAsFixed(1)} km/h", style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+                          if (!isArchivedView)
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline, color: Colors.white54),
+                              onPressed: () async {
+                                if (rides[i]['filePath'] != null) {
+                                  await File(rides[i]['filePath']).delete();
+                                  reload();
+                                }
+                              },
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -369,4 +437,80 @@ class HistoryPageState extends State<HistoryPage> {
       ),
     );
   }
+}
+
+class RideDetailsPage extends StatelessWidget {
+  final Map<String, dynamic> rideData;
+  const RideDetailsPage({super.key, required this.rideData});
+
+  @override
+  Widget build(BuildContext context) {
+    List<LatLng> route = [];
+    if (rideData['route'] != null) {
+      for (var p in rideData['route']) {
+        route.add(LatLng(p[0] as double, p[1] as double));
+      }
+    }
+
+    final double dist = rideData['distance'] ?? 0.0;
+    final String dur = rideData['duration'] ?? '--:--';
+    final double topSpeed = rideData['topSpeed'] ?? 0.0;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text("RIDE DETAILS"), backgroundColor: Colors.black, iconTheme: const IconThemeData(color: Colors.white)),
+      backgroundColor: Colors.black,
+      body: Column(
+        children: [
+          Container(
+             padding: const EdgeInsets.all(20),
+             color: const Color(0xFF121212),
+             child: Row(
+               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+               children: [
+                 _statHeader("DISTANCE", "${(dist / 1000).toStringAsFixed(2)}", "KM"),
+                 _statHeader("TIME", dur, "HRS"),
+                 _statHeader("TOP SPEED", topSpeed.toStringAsFixed(1), "KM/H"),
+               ],
+             ),
+          ),
+          Expanded(
+            child: route.isEmpty
+                ? const Center(child: Text("Path data not available.", style: TextStyle(color: Colors.white54)))
+                : FlutterMap(
+                    options: MapOptions(
+                      initialCenter: route.isNotEmpty ? route.first : const LatLng(0, 0),
+                      initialZoom: 15.0,
+                    ),
+                    children: [
+                      TileLayer(
+                        urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        userAgentPackageName: 'com.omkar.swiftride',
+                      ),
+                      PolylineLayer(polylines: [
+                        Polyline(points: route, color: Colors.orangeAccent, strokeWidth: 5.0),
+                      ]),
+                    ],
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statHeader(String label, String val, String unit) => Expanded(
+    child: Column(children: [
+      Text(label, style: const TextStyle(color: Colors.grey, fontSize: 10, letterSpacing: 1.5)),
+      const SizedBox(height: 5),
+      Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.baseline,
+        textBaseline: TextBaseline.alphabetic,
+        children: [
+          Text(val, style: TextStyle(color: Colors.white, fontSize: val.length > 5 ? 16 : 22, fontWeight: FontWeight.w900)),
+          const SizedBox(width: 4),
+          Text(unit, style: const TextStyle(color: Colors.orangeAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+        ],
+      )
+    ]),
+  );
 }

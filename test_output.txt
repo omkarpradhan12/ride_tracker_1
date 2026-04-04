@@ -1,0 +1,16 @@
+The value specified in an AutoRun registry key could not be parsed.
+The value specified in an AutoRun registry key could not be parsed.
+00:00 +0: loading D:/Projects/RideTracker/ride_tracker_1/integration_test/app_test.dart
+Running Gradle task 'assembleDebug'...                          
+The value specified in an AutoRun registry key could not be parsed.
+The value specified in an AutoRun registry key could not be parsed.
+The value specified in an AutoRun registry key could not be parsed.
+Running Gradle task 'assembleDebug'...                             25.5s
+ΓêÜ Built build\app\outputs\flutter-apk\app-debug.apk
+Installing build\app\outputs\flutter-apk\app-debug.apk...        1,197ms
+00:00 +0: (setUpAll)
+00:00 +0: Ride Tracking logs and path creation test on UI
+00:01 +0: Ride Tracking logs and path creation test on UI - did not complete [E]
+00:01 +0: (tearDownAll) - did not complete [E]
+00:01 +0: Some tests failed.
+No tests were found.
