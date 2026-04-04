@@ -8,13 +8,17 @@ import 'package:intl/intl.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:flutter/foundation.dart'; // For TargetPlatform
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-void main() => runApp(const MaterialApp(
-      home: MainNavigation(),
-      debugShowCheckedModeBanner: false,
-    ));
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const MaterialApp(
+    home: MainNavigation(),
+    debugShowCheckedModeBanner: false,
+  ));
+}
 
 class MainNavigation extends StatefulWidget {
   const MainNavigation({super.key});
@@ -31,6 +35,10 @@ class _MainNavigationState extends State<MainNavigation> {
   @override
   void initState() {
     super.initState();
+    _setupQuickActions();
+  }
+
+  void _setupQuickActions() {
     quickActions.setShortcutItems(const <ShortcutItem>[
       ShortcutItem(type: 'action_start', localizedTitle: 'Start Ride', icon: 'play_arrow'),
       ShortcutItem(type: 'action_stop', localizedTitle: 'Stop Ride', icon: 'stop'),
@@ -50,7 +58,13 @@ class _MainNavigationState extends State<MainNavigation> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: IndexedStack(index: _currentIndex, children: [GPSDashboard(key: _gpsDashboardKey), HistoryPage(key: _historyKey)]),
+      body: IndexedStack(
+        index: _currentIndex,
+        children: [
+          GPSDashboard(key: _gpsDashboardKey),
+          HistoryPage(key: _historyKey)
+        ],
+      ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         backgroundColor: const Color(0xFF121212),
@@ -82,14 +96,43 @@ class _GPSDashboardState extends State<GPSDashboard> with AutomaticKeepAliveClie
   bool isTracking = false;
   double topSpeed = 0.0;
   double totalDistance = 0.0;
-  List<LatLng> _routePoints = [];
+  final List<LatLng> _routePoints = [];
   StreamSubscription<Position>? _positionStream;
   final MapController _mapController = MapController();
+  LatLng? _currentLocation;
+  final LatLng _defaultLocation = const LatLng(18.5204, 73.8567);
+  bool _useGpxMock = false;
+  Timer? _mockRouteTimer;
 
-  // Time Tracking Variables
   Stopwatch _stopwatch = Stopwatch();
   Timer? _timer;
   String _elapsedTime = "00:00:00";
+
+  @override
+  void initState() {
+    super.initState();
+    _loadInitialLocation();
+  }
+
+  Future<void> _loadInitialLocation() async {
+    try {
+      final status = await Permission.locationWhenInUse.request();
+      if (!status.isGranted) return;
+
+      final position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.best);
+      if (!mounted) return;
+
+      setState(() {
+        _currentLocation = LatLng(position.latitude, position.longitude);
+      });
+
+      if (_currentLocation != null) {
+        _mapController.move(_currentLocation!, 16.0);
+      }
+    } catch (e) {
+      debugPrint("Initial location error: $e");
+    }
+  }
 
   @override
   bool get wantKeepAlive => true;
@@ -104,9 +147,7 @@ class _GPSDashboardState extends State<GPSDashboard> with AutomaticKeepAliveClie
 
   String _formatDuration(Duration duration) {
     String twoDigits(int n) => n.toString().padLeft(2, "0");
-    String twoDigitMinutes = twoDigits(duration.inMinutes.remainder(60));
-    String twoDigitSeconds = twoDigits(duration.inSeconds.remainder(60));
-    return "${twoDigits(duration.inHours)}:$twoDigitMinutes:$twoDigitSeconds";
+    return "${twoDigits(duration.inHours)}:${twoDigits(duration.inMinutes.remainder(60))}:${twoDigits(duration.inSeconds.remainder(60))}";
   }
 
   Future<void> _toggleTracking() async {
@@ -117,34 +158,98 @@ class _GPSDashboardState extends State<GPSDashboard> with AutomaticKeepAliveClie
     }
   }
 
+  Future<void> _startMockRide() async {
+    if (isTracking) return;
+    _useGpxMock = true;
+    await startRide();
+  }
+
+  Future<List<LatLng>> _parseGpxPoints() async {
+    try {
+      final raw = await rootBundle.loadString('test_route.gpx');
+      final matches = RegExp(r'<trkpt\s+lat="([^"]+)"\s+lon="([^"]+)"', caseSensitive: false).allMatches(raw);
+      return matches.map((match) {
+        return LatLng(double.parse(match.group(1)!), double.parse(match.group(2)!));
+      }).toList();
+    } catch (e) {
+      debugPrint('Failed to parse GPX: $e');
+      return [];
+    }
+  }
+
+  Stream<Position> _createGpxPositionStream(List<LatLng> points) {
+    final controller = StreamController<Position>();
+    int index = 0;
+
+    _mockRouteTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (index >= points.length) {
+        _mockRouteTimer?.cancel();
+        if (!controller.isClosed) controller.close();
+        return;
+      }
+
+      final point = points[index++];
+      controller.add(Position(
+        latitude: point.latitude,
+        longitude: point.longitude,
+        timestamp: DateTime.now(),
+        accuracy: 1.0,
+        altitude: 0.0,
+        heading: 0.0,
+        headingAccuracy: 0.0,
+        speed: 5.0,
+        speedAccuracy: 0.0,
+        altitudeAccuracy: 0.0,
+      ));
+    });
+
+    controller.onCancel = () {
+      _mockRouteTimer?.cancel();
+    };
+    return controller.stream;
+  }
+
+  void _onPositionUpdate(Position pos) {
+    if (!mounted) return;
+    LatLng newPoint = LatLng(pos.latitude, pos.longitude);
+    double speed = pos.speed * 3.6; // Convert m/s to km/h
+
+    setState(() {
+      if (speed > topSpeed) topSpeed = speed;
+      if (_routePoints.isNotEmpty) {
+        totalDistance += Geolocator.distanceBetween(
+          _routePoints.last.latitude,
+          _routePoints.last.longitude,
+          pos.latitude,
+          pos.longitude,
+        );
+      }
+      _routePoints.add(newPoint);
+      _currentLocation = newPoint;
+    });
+    _mapController.move(newPoint, 16.0);
+  }
+
   Future<void> stopRide() async {
     if (!isTracking) return;
     await _positionStream?.cancel();
     _positionStream = null;
     _stopwatch.stop();
     _timer?.cancel();
-
     await _saveRide();
-
-    if (mounted) {
-      setState(() {
-        isTracking = false;
-      });
-    }
+    if (mounted) setState(() => isTracking = false);
   }
 
   Future<void> startRide() async {
     if (isTracking) return;
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) return;
+
+    if (!_useGpxMock) {
+      var status = await Permission.location.request();
+      if (!status.isGranted) return;
     }
 
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      if (await Permission.notification.isDenied) {
-        await Permission.notification.request();
-      }
+    if (!_useGpxMock && defaultTargetPlatform == TargetPlatform.android) {
+      await Permission.notification.request();
     }
 
     setState(() {
@@ -153,65 +258,41 @@ class _GPSDashboardState extends State<GPSDashboard> with AutomaticKeepAliveClie
       totalDistance = 0.0;
       topSpeed = 0.0;
       _elapsedTime = "00:00:00";
-      _stopwatch = Stopwatch()..start();
+      _stopwatch = Stopwatch()..reset()..start();
       _timer = Timer.periodic(const Duration(seconds: 1), _updateTime);
     });
 
-    late LocationSettings locationSettings;
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      locationSettings = AndroidSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 10,
-        forceLocationManager: true,
-        intervalDuration: const Duration(seconds: 1),
-        foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationText: "Ride is ongoing in the background",
-          notificationTitle: "SwiftRide Tracker",
-          enableWakeLock: true,
-          notificationIcon: AndroidResource(name: 'play_arrow', defType: 'drawable'),
-        ),
-      );
-    } else if (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.macOS) {
-      locationSettings = AppleSettings(
-        accuracy: LocationAccuracy.high,
-        activityType: ActivityType.fitness,
-        distanceFilter: 10,
-        pauseLocationUpdatesAutomatically: true,
-        showBackgroundLocationIndicator: true,
-      );
+    if (_useGpxMock) {
+      final points = await _parseGpxPoints();
+      if (points.isEmpty) {
+        debugPrint('No GPX points available for mock route.');
+        await stopRide();
+        return;
+      }
+      _positionStream = _createGpxPositionStream(points).listen(_onPositionUpdate);
     } else {
-      locationSettings = const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 10,
-      );
+      LocationSettings locationSettings;
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        locationSettings = AndroidSettings(
+          accuracy: LocationAccuracy.best,
+          distanceFilter: 0,
+          intervalDuration: const Duration(seconds: 1),
+          foregroundNotificationConfig: const ForegroundNotificationConfig(
+            notificationText: "Tracking your ride...",
+            notificationTitle: "SwiftRide Active",
+            enableWakeLock: true,
+          ),
+        );
+      } else {
+        locationSettings = const LocationSettings(
+          accuracy: LocationAccuracy.best,
+          distanceFilter: 0,
+        );
+      }
+
+      _positionStream = Geolocator.getPositionStream(locationSettings: locationSettings).listen(_onPositionUpdate);
     }
-
-    _positionStream = Geolocator.getPositionStream(
-      locationSettings: locationSettings
-    ).listen((pos) {
-      if (!mounted) return;
-
-      Future.microtask(() {
-        if (mounted) {
-          LatLng newPoint = LatLng(pos.latitude, pos.longitude);
-          double speed = pos.speed * 3.6;
-
-          setState(() {
-            if (speed > topSpeed) topSpeed = speed;
-            if (_routePoints.isNotEmpty) {
-              totalDistance += Geolocator.distanceBetween(
-                _routePoints.last.latitude,
-                _routePoints.last.longitude,
-                pos.latitude,
-                pos.longitude
-              );
-            }
-            _routePoints.add(newPoint);
-          });
-          _mapController.move(newPoint, 16.0);
-        }
-      });
-    });
+    _useGpxMock = false;
   }
 
   Future<void> _saveRide() async {
@@ -235,39 +316,75 @@ class _GPSDashboardState extends State<GPSDashboard> with AutomaticKeepAliveClie
     super.build(context);
     return Column(
       children: [
-        Container(
-          padding: const EdgeInsets.only(top: 60, bottom: 20),
-          decoration: const BoxDecoration(color: Color(0xFF121212)),
-          child: Row(
-            children: [
-              _statHeader("DISTANCE", "${(totalDistance / 1000).toStringAsFixed(2)}", "KM"),
-              _statHeader("TIME", _elapsedTime, "HRS"), // New Time Tile
-              _statHeader("TOP SPEED", topSpeed.toStringAsFixed(1), "KM/H"),
-            ],
-          ),
-        ),
+        _buildStatPanel(),
         Expanded(
           child: FlutterMap(
             mapController: _mapController,
-            options: const MapOptions(
-              initialCenter: LatLng(18.5204, 73.8567),
+            options: MapOptions(
+              initialCenter: _currentLocation ?? _defaultLocation,
               initialZoom: 15.0,
             ),
             children: [
               TileLayer(
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'com.omkar.swiftride',
+                userAgentPackageName: 'com.example.swiftride',
               ),
+              if (_currentLocation != null)
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: _currentLocation!,
+                      width: 18,
+                      height: 18,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.orangeAccent.withOpacity(0.95),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.orangeAccent.withOpacity(0.4),
+                              blurRadius: 8,
+                              spreadRadius: 1,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               PolylineLayer(polylines: [
                 Polyline(points: _routePoints, color: Colors.orangeAccent, strokeWidth: 5.0),
               ]),
             ],
           ),
         ),
-        Container(
-          padding: const EdgeInsets.all(25),
-          decoration: const BoxDecoration(color: Color(0xFF121212)),
-          child: ElevatedButton(
+        _buildActionButton(),
+      ],
+    );
+  }
+
+  Widget _buildStatPanel() {
+    return Container(
+      padding: const EdgeInsets.only(top: 60, bottom: 20),
+      color: const Color(0xFF121212),
+      child: Row(
+        children: [
+          _statHeader("DISTANCE", (totalDistance / 1000).toStringAsFixed(2), "KM"),
+          _statHeader("TIME", _elapsedTime, "HRS"),
+          _statHeader("TOP SPEED", topSpeed.toStringAsFixed(1), "KM/H"),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionButton() {
+    return Container(
+      padding: const EdgeInsets.all(25),
+      color: const Color(0xFF121212),
+      child: Column(
+        children: [
+          ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: isTracking ? Colors.redAccent : Colors.orangeAccent,
               minimumSize: const Size(double.infinity, 65),
@@ -275,10 +392,24 @@ class _GPSDashboardState extends State<GPSDashboard> with AutomaticKeepAliveClie
             ),
             onPressed: _toggleTracking,
             child: Text(isTracking ? "FINISH SESSION" : "START NEW RIDE",
-                 style: const TextStyle(color: Colors.black, fontSize: 18, fontWeight: FontWeight.bold)),
+                style: const TextStyle(color: Colors.black, fontSize: 18, fontWeight: FontWeight.bold)),
           ),
-        ),
-      ],
+          if (kIsWeb && !isTracking)
+            Padding(
+              padding: const EdgeInsets.only(top: 14),
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blueGrey,
+                  minimumSize: const Size(double.infinity, 55),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                ),
+                onPressed: _startMockRide,
+                child: const Text("PLAY MOCK GPX ROUTE",
+                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -291,7 +422,7 @@ class _GPSDashboardState extends State<GPSDashboard> with AutomaticKeepAliveClie
         crossAxisAlignment: CrossAxisAlignment.baseline,
         textBaseline: TextBaseline.alphabetic,
         children: [
-          Text(val, style: TextStyle(color: Colors.white, fontSize: val.length > 5 ? 20 : 28, fontWeight: FontWeight.w900)),
+          Text(val, style: TextStyle(color: Colors.white, fontSize: val.length > 7 ? 18 : 24, fontWeight: FontWeight.w900)),
           const SizedBox(width: 4),
           Text(unit, style: const TextStyle(color: Colors.orangeAccent, fontSize: 10, fontWeight: FontWeight.bold)),
         ],
@@ -318,20 +449,30 @@ class HistoryPageState extends State<HistoryPage> {
   bool isArchivedView = false;
 
   @override
-  void initState() { super.initState(); reload(); }
+  void initState() {
+    super.initState();
+    reload();
+  }
 
   Future<void> reload({String? specificFile}) async {
     final dir = await getApplicationDocumentsDirectory();
     if (specificFile != null) {
       final content = await File('${dir.path}/$specificFile').readAsString();
-      setState(() { rides = jsonDecode(content); isArchivedView = true; });
+      setState(() {
+        rides = jsonDecode(content);
+        isArchivedView = true;
+      });
     } else {
       final files = dir.listSync().where((f) => f.path.endsWith('.json') && !f.path.contains('archive_')).toList();
       final List<dynamic> temp = [];
       for (var f in files) {
-        Map<String, dynamic> data = jsonDecode(await File(f.path).readAsString());
-        data['filePath'] = f.path;
-        temp.add(data);
+        try {
+          Map<String, dynamic> data = jsonDecode(await File(f.path).readAsString());
+          data['filePath'] = f.path;
+          temp.add(data);
+        } catch (e) {
+          debugPrint("Load error for ${f.path}: $e");
+        }
       }
       setState(() {
         rides = temp;
@@ -346,68 +487,63 @@ class HistoryPageState extends State<HistoryPage> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: Text(isArchivedView ? "ARCHIVE DATA" : "RIDE LOGS", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
+        title: Text(isArchivedView ? "ARCHIVE DATA" : "RIDE LOGS",
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
         backgroundColor: Colors.black,
-        elevation: 0,
         actions: [
-          if (isArchivedView) IconButton(icon: const Icon(Icons.close, color: Colors.white), onPressed: () => reload()),
-          IconButton(icon: const Icon(Icons.inventory_2_outlined, color: Colors.orangeAccent), onPressed: _performArchive),
-          IconButton(icon: const Icon(Icons.folder_zip_outlined, color: Colors.orangeAccent), onPressed: _pickArchive),
+          if (isArchivedView) IconButton(icon: const Icon(Icons.close), onPressed: () => reload()),
+          IconButton(icon: const Icon(Icons.inventory_2, color: Colors.orangeAccent), onPressed: _performArchive),
+          IconButton(icon: const Icon(Icons.folder_zip, color: Colors.orangeAccent), onPressed: _pickArchive),
         ],
       ),
       body: rides.isEmpty
           ? const Center(child: Text("No records yet.", style: TextStyle(color: Colors.white24)))
           : ListView.builder(
               itemCount: rides.length,
-              itemBuilder: (c, i) => GestureDetector(
-                onTap: () {
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => RideDetailsPage(rideData: rides[i])));
-                },
-                child: Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                  padding: const EdgeInsets.all(18),
-                  decoration: BoxDecoration(color: const Color(0xFF1A1A1A), borderRadius: BorderRadius.circular(15)),
-                  child: Row(
+              itemBuilder: (c, i) => _buildRideCard(rides[i]),
+            ),
+    );
+  }
+
+  Widget _buildRideCard(dynamic ride) {
+    return GestureDetector(
+      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => RideDetailsPage(rideData: ride))),
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(color: const Color(0xFF1A1A1A), borderRadius: BorderRadius.circular(15)),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(DateFormat('MMM dd, yyyy • hh:mm a').format(DateTime.parse(ride['date'])),
+                      style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                  const SizedBox(height: 8),
+                  Row(
                     children: [
-                      Expanded(child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(DateFormat('MMM dd, yyyy • hh:mm a').format(DateTime.parse(rides[i]['date'])), style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                          const SizedBox(height: 8),
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.baseline,
-                            textBaseline: TextBaseline.alphabetic,
-                            children: [
-                              Text("${(rides[i]['distance']/1000).toStringAsFixed(2)}", style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w900)),
-                              const Text(" KM", style: TextStyle(color: Colors.orangeAccent, fontSize: 12, fontWeight: FontWeight.bold)),
-                              const SizedBox(width: 15),
-                              Text("${rides[i]['duration'] ?? '--:--'}", style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
-                              const Text(" HRS", style: TextStyle(color: Colors.orangeAccent, fontSize: 12, fontWeight: FontWeight.bold)),
-                            ],
-                          ),
-                        ],
-                      )),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Text("${rides[i]['topSpeed'].toStringAsFixed(1)} km/h", style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
-                          if (!isArchivedView)
-                            IconButton(
-                              icon: const Icon(Icons.delete_outline, color: Colors.white54),
-                              onPressed: () async {
-                                if (rides[i]['filePath'] != null) {
-                                  await File(rides[i]['filePath']).delete();
-                                  reload();
-                                }
-                              },
-                            ),
-                        ],
-                      ),
+                      Text("${(ride['distance'] / 1000).toStringAsFixed(2)}",
+                          style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+                      const Text(" KM", style: TextStyle(color: Colors.orangeAccent, fontSize: 10)),
+                      const SizedBox(width: 15),
+                      Text("${ride['duration']}", style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
                     ],
                   ),
-                ),
+                ],
               ),
             ),
+            if (!isArchivedView)
+              IconButton(
+                icon: const Icon(Icons.delete_outline, color: Colors.white54),
+                onPressed: () async {
+                  await File(ride['filePath']).delete();
+                  reload();
+                },
+              ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -416,8 +552,11 @@ class HistoryPageState extends State<HistoryPage> {
     final files = dir.listSync().where((f) => f.path.endsWith('.json') && !f.path.contains('archive_')).toList();
     if (files.isEmpty) return;
     List<dynamic> data = [];
-    for (var f in files) { data.add(jsonDecode(await File(f.path).readAsString())); await f.delete(); }
-    final name = "archive_${DateFormat('yyyy_MM_dd').format(DateTime.now())}.json";
+    for (var f in files) {
+      data.add(jsonDecode(await File(f.path).readAsString()));
+      await f.delete();
+    }
+    final name = "archive_${DateFormat('yyyy_MM_dd_HHmm').format(DateTime.now())}.json";
     await File('${dir.path}/$name').writeAsString(jsonEncode(data));
     reload();
   }
@@ -425,15 +564,19 @@ class HistoryPageState extends State<HistoryPage> {
   void _pickArchive() async {
     final dir = await getApplicationDocumentsDirectory();
     final archives = dir.listSync().where((f) => f.path.contains('archive_')).toList();
-    if (!mounted) return;
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF121212),
       builder: (c) => ListView(
-        children: archives.map((f) => ListTile(
-          title: Text(f.path.split(Platform.pathSeparator).last, style: const TextStyle(color: Colors.white)),
-          onTap: () { Navigator.pop(c); reload(specificFile: f.path.split(Platform.pathSeparator).last); },
-        )).toList(),
+        children: archives
+            .map((f) => ListTile(
+                  title: Text(f.path.split(Platform.pathSeparator).last, style: const TextStyle(color: Colors.white)),
+                  onTap: () {
+                    Navigator.pop(c);
+                    reload(specificFile: f.path.split(Platform.pathSeparator).last);
+                  },
+                ))
+            .toList(),
       ),
     );
   }
@@ -448,44 +591,26 @@ class RideDetailsPage extends StatelessWidget {
     List<LatLng> route = [];
     if (rideData['route'] != null) {
       for (var p in rideData['route']) {
-        route.add(LatLng(p[0] as double, p[1] as double));
+        route.add(LatLng(p[0], p[1]));
       }
     }
 
-    final double dist = rideData['distance'] ?? 0.0;
-    final String dur = rideData['duration'] ?? '--:--';
-    final double topSpeed = rideData['topSpeed'] ?? 0.0;
-
     return Scaffold(
-      appBar: AppBar(title: const Text("RIDE DETAILS"), backgroundColor: Colors.black, iconTheme: const IconThemeData(color: Colors.white)),
+      appBar: AppBar(title: const Text("RIDE DETAILS"), backgroundColor: Colors.black),
       backgroundColor: Colors.black,
       body: Column(
         children: [
-          Container(
-             padding: const EdgeInsets.all(20),
-             color: const Color(0xFF121212),
-             child: Row(
-               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-               children: [
-                 _statHeader("DISTANCE", "${(dist / 1000).toStringAsFixed(2)}", "KM"),
-                 _statHeader("TIME", dur, "HRS"),
-                 _statHeader("TOP SPEED", topSpeed.toStringAsFixed(1), "KM/H"),
-               ],
-             ),
-          ),
+          _buildDetailHeader(),
           Expanded(
             child: route.isEmpty
-                ? const Center(child: Text("Path data not available.", style: TextStyle(color: Colors.white54)))
+                ? const Center(child: Text("No path recorded", style: TextStyle(color: Colors.white24)))
                 : FlutterMap(
                     options: MapOptions(
-                      initialCenter: route.isNotEmpty ? route.first : const LatLng(0, 0),
-                      initialZoom: 15.0,
+                      initialCenter: route.first,
+                      initialZoom: 15.0
                     ),
                     children: [
-                      TileLayer(
-                        urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                        userAgentPackageName: 'com.omkar.swiftride',
-                      ),
+                      TileLayer(urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'),
                       PolylineLayer(polylines: [
                         Polyline(points: route, color: Colors.orangeAccent, strokeWidth: 5.0),
                       ]),
@@ -497,20 +622,24 @@ class RideDetailsPage extends StatelessWidget {
     );
   }
 
-  Widget _statHeader(String label, String val, String unit) => Expanded(
-    child: Column(children: [
-      Text(label, style: const TextStyle(color: Colors.grey, fontSize: 10, letterSpacing: 1.5)),
-      const SizedBox(height: 5),
-      Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.baseline,
-        textBaseline: TextBaseline.alphabetic,
+  Widget _buildDetailHeader() {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      color: const Color(0xFF121212),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
-          Text(val, style: TextStyle(color: Colors.white, fontSize: val.length > 5 ? 16 : 22, fontWeight: FontWeight.w900)),
-          const SizedBox(width: 4),
-          Text(unit, style: const TextStyle(color: Colors.orangeAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+          _detailTile("DISTANCE", "${(rideData['distance'] / 1000).toStringAsFixed(2)}", "KM"),
+          _detailTile("TIME", rideData['duration'], ""),
+          _detailTile("TOP", rideData['topSpeed'].toStringAsFixed(1), "KM/H"),
         ],
-      )
-    ]),
-  );
+      ),
+    );
+  }
+
+  Widget _detailTile(String label, String val, String unit) => Column(children: [
+        Text(label, style: const TextStyle(color: Colors.grey, fontSize: 10)),
+        Text(val, style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+        if (unit.isNotEmpty) Text(unit, style: const TextStyle(color: Colors.orangeAccent, fontSize: 10)),
+      ]);
 }

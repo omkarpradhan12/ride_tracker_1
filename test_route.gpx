@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="SwiftRide Tester" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>Pune Curved Ride</name>
+    <trkseg>
+      <trkpt lat="18.5204" lon="73.8567"></trkpt>
+      <trkpt lat="18.5209" lon="73.8571"></trkpt>
+      <trkpt lat="18.5215" lon="73.8573"></trkpt>
+      <trkpt lat="18.5221" lon="73.8574"></trkpt>
+      <trkpt lat="18.5227" lon="73.8576"></trkpt>
+
+      <!-- slight right curve -->
+      <trkpt lat="18.5233" lon="73.8580"></trkpt>
+      <trkpt lat="18.5238" lon="73.8586"></trkpt>
+      <trkpt lat="18.5242" lon="73.8593"></trkpt>
+
+      <!-- straight stretch -->
+      <trkpt lat="18.5248" lon="73.8600"></trkpt>
+      <trkpt lat="18.5255" lon="73.8607"></trkpt>
+      <trkpt lat="18.5262" lon="73.8613"></trkpt>
+
+      <!-- curve left -->
+      <trkpt lat="18.5268" lon="73.8618"></trkpt>
+      <trkpt lat="18.5272" lon="73.8624"></trkpt>
+      <trkpt lat="18.5276" lon="73.8631"></trkpt>
+
+      <!-- final stretch -->
+      <trkpt lat="18.5282" lon="73.8639"></trkpt>
+      <trkpt lat="18.5289" lon="73.8646"></trkpt>
+      <trkpt lat="18.5296" lon="73.8652"></trkpt>
+      <trkpt lat="18.5303" lon="73.8659"></trkpt>
+    </trkseg>
+  </trk>
+</gpx>
