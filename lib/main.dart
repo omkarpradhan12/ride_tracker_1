@@ -8,6 +8,7 @@ import 'package:intl/intl.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -103,6 +104,7 @@ class _GPSDashboardState extends State<GPSDashboard>
   double topSpeed = 0.0;
   double totalDistance = 0.0;
   final List<LatLng> _routePoints = [];
+  final List<double> _routeSegmentSpeeds = [];
   StreamSubscription<Position>? _positionStream;
   final MapController _mapController = MapController();
   LatLng? _currentLocation;
@@ -152,13 +154,20 @@ class _GPSDashboardState extends State<GPSDashboard>
     return "${twoDigits(duration.inHours)}:${twoDigits(duration.inMinutes.remainder(60))}:${twoDigits(duration.inSeconds.remainder(60))}";
   }
 
+  Color _colorForSpeed(double speedKmH) {
+    if (speedKmH <= 10.0) return Colors.red;
+    if (speedKmH <= 30.0) return Colors.yellow;
+    if (speedKmH <= 70.0) return Colors.green;
+    return Colors.yellow;
+  }
+
   void _onPositionUpdate(Position pos) {
     if (!mounted) return;
 
     LatLng newPoint = LatLng(pos.latitude, pos.longitude);
     double speedKmH = pos.speed * 3.6;
 
-    // Filter out GPS jitter: Only update if speed > 0.5 km/h or accuracy is decent
+    // Filter out GPS jitter: Only update if accuracy is decent
     if (pos.accuracy > 25) return;
 
     setState(() {
@@ -176,6 +185,7 @@ class _GPSDashboardState extends State<GPSDashboard>
         if (distanceDelta > 2.0) {
           totalDistance += distanceDelta;
           _routePoints.add(newPoint);
+          _routeSegmentSpeeds.add(speedKmH);
         }
       } else {
         _routePoints.add(newPoint);
@@ -198,6 +208,7 @@ class _GPSDashboardState extends State<GPSDashboard>
     setState(() {
       isTracking = true;
       _routePoints.clear();
+      _routeSegmentSpeeds.clear();
       totalDistance = 0.0;
       topSpeed = 0.0;
       _elapsedTime = "00:00:00";
@@ -254,6 +265,7 @@ class _GPSDashboardState extends State<GPSDashboard>
         'topSpeed': topSpeed,
         'duration': _elapsedTime,
         'route': _routePoints.map((p) => [p.latitude, p.longitude]).toList(),
+        'segmentSpeeds': _routeSegmentSpeeds,
       });
 
       await file.writeAsString(data);
@@ -278,11 +290,42 @@ class _GPSDashboardState extends State<GPSDashboard>
             children: [
               TileLayer(
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'com.example.swiftride',
+                tileProvider: NetworkTileProvider(
+                  headers: {'User-Agent': 'RideTracker/1.0'},
+                ),
               ),
               if (_currentLocation != null)
                 MarkerLayer(
                   markers: [
+                    if (_routePoints.isNotEmpty) ...[
+                      Marker(
+                        point: _routePoints.first,
+                        width: 30,
+                        height: 30,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.green,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                          ),
+                          child: const Icon(Icons.play_arrow, color: Colors.white, size: 16),
+                        ),
+                      ),
+                      if (!isTracking)
+                        Marker(
+                          point: _routePoints.last,
+                          width: 30,
+                          height: 30,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.red,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: Colors.white, width: 2),
+                            ),
+                            child: const Icon(Icons.stop, color: Colors.white, size: 16),
+                          ),
+                        ),
+                    ],
                     Marker(
                       point: _currentLocation!,
                       width: 18,
@@ -298,10 +341,19 @@ class _GPSDashboardState extends State<GPSDashboard>
                   ],
                 ),
               PolylineLayer(polylines: [
-                Polyline(
-                    points: _routePoints,
-                    color: Colors.orangeAccent,
-                    strokeWidth: 5.0),
+                for (int i = 1; i <= min(_routeSegmentSpeeds.length, _routePoints.length - 1); i++) ...[
+                  if (_routeSegmentSpeeds[i - 1] > 70)
+                    Polyline(
+                      points: [_routePoints[i - 1], _routePoints[i]],
+                      color: Colors.black,
+                      strokeWidth: 7.0,
+                    ),
+                  Polyline(
+                    points: [_routePoints[i - 1], _routePoints[i]],
+                    color: _colorForSpeed(_routeSegmentSpeeds[i - 1]),
+                    strokeWidth: 5.0,
+                  ),
+                ],
               ]),
             ],
           ),
@@ -390,7 +442,10 @@ class HistoryPage extends StatefulWidget {
 
 class HistoryPageState extends State<HistoryPage> {
   List<dynamic> rides = [];
-  bool isArchivedView = false;
+  bool isArchiveView = false;
+  bool isViewingArchived = false;
+  bool isSelectionMode = false;
+  Set<int> selectedRides = {};
 
   @override
   void initState() {
@@ -398,20 +453,59 @@ class HistoryPageState extends State<HistoryPage> {
     reload();
   }
 
-  Future<void> reload({String? specificFile}) async {
+  Future<void> reload({String? specificFile, bool archiveView = false}) async {
     final dir = await getApplicationDocumentsDirectory();
+    setState(() {
+      isArchiveView = archiveView;
+      isViewingArchived = specificFile != null;
+    });
     if (specificFile != null) {
-      final content = await File('${dir.path}/$specificFile').readAsString();
+      try {
+        final content = await File('${dir.path}/$specificFile').readAsString();
+        setState(() {
+          rides = jsonDecode(content);
+        });
+        print("✅ Loaded archive: $specificFile with ${rides.length} rides");
+      } catch (e) {
+        print("❌ Error loading archive $specificFile: $e");
+      }
+    } else if (archiveView) {
+      final dir = await getApplicationDocumentsDirectory();
+      print("Dir path: ${dir.path}");
+      print("All files in dir: ${Directory(dir.path).listSync().map((f) => f.path.split(Platform.pathSeparator).last).toList()}");
+      final files = dir
+          .listSync()
+          .where((f) => f.path.endsWith('.json') && !f.path.split(Platform.pathSeparator).last.contains('ride_'))
+          .toList();
+      print("Files found: ${files.map((f) => f.path.split(Platform.pathSeparator).last).toList()}");
+      print("📁 Loading archives, found ${files.length} files: ${files.map((f) => f.path.split(Platform.pathSeparator).last).toList()}");
+      final List<dynamic> temp = [];
+      for (var f in files) {
+        String name = f.path.split(Platform.pathSeparator).last;
+        try {
+          List<dynamic> content = jsonDecode(await File(f.path).readAsString());
+          DateTime date = content.map((r) => DateTime.parse(r['date'])).reduce((a, b) => a.isAfter(b) ? a : b);
+          temp.add({
+            'fileName': name,
+            'date': date,
+            'ridesCount': content.length,
+          });
+        } catch (e) {
+          print("⚠️ Skipping invalid archive file: $name, error: $e");
+        }
+      }
       setState(() {
-        rides = jsonDecode(content);
-        isArchivedView = true;
+        rides = temp;
+        rides.sort((a, b) => b['date'].compareTo(a['date']));
       });
+      print("✅ Loaded ${rides.length} archives");
     } else {
       final files = dir
           .listSync()
           .where(
-              (f) => f.path.endsWith('.json') && !f.path.contains('archive_'))
+              (f) => f.path.endsWith('.json') && !f.path.split(Platform.pathSeparator).last.contains('archive_'))
           .toList();
+      print("📝 Loading ride logs, found ${files.length} files");
       final List<dynamic> temp = [];
       for (var f in files) {
         try {
@@ -419,13 +513,15 @@ class HistoryPageState extends State<HistoryPage> {
               jsonDecode(await File(f.path).readAsString());
           data['filePath'] = f.path;
           temp.add(data);
-        } catch (e) {}
+        } catch (e) {
+          print("⚠️ Skipping invalid ride file: ${f.path.split(Platform.pathSeparator).last}, error: $e");
+        }
       }
       setState(() {
         rides = temp;
         rides.sort((a, b) => b['date'].compareTo(a['date']));
-        isArchivedView = false;
       });
+      print("✅ Loaded ${rides.length} ride logs");
     }
   }
 
@@ -434,19 +530,30 @@ class HistoryPageState extends State<HistoryPage> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: Text(isArchivedView ? "ARCHIVE DATA" : "RIDE LOGS",
+        title: Text(isSelectionMode ? "SELECT RIDES TO ARCHIVE" : (isArchiveView ? "ARCHIVES" : (isViewingArchived ? "ARCHIVED RIDES" : "RIDE LOGS")),
             style: const TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.bold,
                 color: Colors.white)),
         backgroundColor: Colors.black,
         actions: [
-          if (isArchivedView)
+          if (isSelectionMode) ...[
+            IconButton(
+                icon: const Icon(Icons.close), onPressed: () => setState(() { isSelectionMode = false; selectedRides.clear(); })),
+          ] else if (isArchiveView) ...[
             IconButton(
                 icon: const Icon(Icons.close), onPressed: () => reload()),
-          IconButton(
-              icon: const Icon(Icons.inventory_2, color: Colors.orangeAccent),
-              onPressed: _performArchive),
+          ] else if (isViewingArchived) ...[
+            IconButton(
+                icon: const Icon(Icons.close), onPressed: () => reload(archiveView: true)),
+          ] else ...[
+            IconButton(
+                icon: const Icon(Icons.inventory_2, color: Colors.orangeAccent),
+                onPressed: _startArchiveSelection),
+            IconButton(
+                icon: const Icon(Icons.archive, color: Colors.orangeAccent),
+                onPressed: () => reload(archiveView: true)),
+          ],
         ],
       ),
       body: rides.isEmpty
@@ -455,93 +562,336 @@ class HistoryPageState extends State<HistoryPage> {
                   style: TextStyle(color: Colors.white24)))
           : ListView.builder(
               itemCount: rides.length,
-              itemBuilder: (c, i) => _buildRideCard(rides[i]),
+              itemBuilder: (c, i) => _buildRideCard(rides[i], i),
             ),
+      floatingActionButton: isSelectionMode ? FloatingActionButton(
+        onPressed: _confirmArchive,
+        child: const Icon(Icons.archive),
+        backgroundColor: Colors.orangeAccent,
+      ) : null,
     );
   }
 
-  Widget _buildRideCard(dynamic ride) {
-    return GestureDetector(
-      onTap: () => Navigator.push(context,
-          MaterialPageRoute(builder: (_) => RideDetailsPage(rideData: ride))),
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-        padding: const EdgeInsets.all(18),
-        decoration: BoxDecoration(
-            color: const Color(0xFF1A1A1A),
-            borderRadius: BorderRadius.circular(15)),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildRideCard(dynamic ride, int index) {
+    if (ride.containsKey('fileName')) {
+      // Archive card
+      String nameWithoutExt = ride['fileName'].replaceAll('.json', '');
+      List<String> parts = nameWithoutExt.split('_');
+      String displayName = parts.length > 1 ? parts[1] : 'Archive';
+      return GestureDetector(
+        onTap: () => reload(specificFile: ride['fileName']),
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+              color: const Color(0xFF1A1A1A),
+              borderRadius: BorderRadius.circular(15)),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(displayName,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 4),
+                    Text(
+                        DateFormat('MMM dd, yyyy • hh:mm a')
+                            .format(ride['date']),
+                        style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                    const SizedBox(height: 8),
+                    Text("${ride['ridesCount']} rides",
+                        style: const TextStyle(
+                            color: Colors.orangeAccent,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500)),
+                  ],
+                ),
+              ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                      DateFormat('MMM dd, yyyy • hh:mm a')
-                          .format(DateTime.parse(ride['date'])),
-                      style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Text("${(ride['distance'] / 1000).toStringAsFixed(2)}",
-                          style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold)),
-                      const Text(" KM",
-                          style: TextStyle(
-                              color: Colors.orangeAccent, fontSize: 10)),
-                    ],
+                  IconButton(
+                    icon: const Icon(Icons.edit, color: Colors.white54),
+                    onPressed: () async {
+                      String? newName = await _showRenameDialog(context, ride['fileName']);
+                      if (newName != null && newName.isNotEmpty) {
+                        final dir = await getApplicationDocumentsDirectory();
+                        String oldPath = '${dir.path}/${ride['fileName']}';
+                        String nameWithoutExt = ride['fileName'].replaceAll('.json', '');
+                        List<String> parts = nameWithoutExt.split('_');
+                        String datePart = parts.length > 2 ? parts[2] : DateTime.now().millisecondsSinceEpoch.toString();
+                        String newFileName = "archive_${newName}_${datePart}.json";
+                        String newPath = '${dir.path}/$newFileName';
+                        try {
+                          await File(oldPath).rename(newPath);
+                          print("✏️ Renamed archive from ${ride['fileName']} to $newFileName");
+                          reload(archiveView: true);
+                        } catch (e) {
+                          print("❌ Error renaming archive: $e");
+                        }
+                      }
+                    },
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline, color: Colors.white54),
+                    onPressed: () async {
+                      final dir = await getApplicationDocumentsDirectory();
+                      await File('${dir.path}/${ride['fileName']}').delete();
+                      print("🗑️ Deleted archive: ${ride['fileName']}");
+                      reload(archiveView: true);
+                    },
                   ),
                 ],
               ),
-            ),
-            if (!isArchivedView)
-              IconButton(
-                icon: const Icon(Icons.delete_outline, color: Colors.white54),
-                onPressed: () async {
-                  await File(ride['filePath']).delete();
-                  reload();
-                },
-              ),
-          ],
+            ],
+          ),
         ),
-      ),
+      );
+    } else {
+      // Ride card
+      return GestureDetector(
+        onTap: isSelectionMode ? null : () => Navigator.push(context,
+            MaterialPageRoute(builder: (_) => RideDetailsPage(rideData: ride))),
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+              color: const Color(0xFF1A1A1A),
+              borderRadius: BorderRadius.circular(15)),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                        DateFormat('yyyy-MM-dd : hh:mm a')
+                            .format(DateTime.parse(ride['date'])),
+                        style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Text("${(ride['distance'] / 1000).toStringAsFixed(2)} KM",
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold)),
+                        const SizedBox(width: 10),
+                        Text(ride['duration'],
+                            style: const TextStyle(
+                                color: Colors.orangeAccent,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500)),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              if (isSelectionMode) ...[
+                Checkbox(
+                  value: selectedRides.contains(index),
+                  onChanged: (bool? value) {
+                    setState(() {
+                      if (value == true) {
+                        selectedRides.add(index);
+                      } else {
+                        selectedRides.remove(index);
+                      }
+                    });
+                  },
+                  activeColor: Colors.orangeAccent,
+                ),
+              ] else if (!isViewingArchived) ...[
+                IconButton(
+                  icon: const Icon(Icons.delete_outline, color: Colors.white54),
+                  onPressed: () async {
+                    await File(ride['filePath']).delete();
+                    reload();
+                  },
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
+    }
+  }
+
+  void _startArchiveSelection() {
+    setState(() {
+      isSelectionMode = true;
+      selectedRides.clear();
+    });
+  }
+
+  void _confirmArchive() {
+    if (selectedRides.isEmpty) return;
+    _showArchiveNameDialog();
+  }
+
+  Future<void> _showArchiveNameDialog() async {
+    String archiveName = '';
+    return showDialog<void>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Name Your Archive'),
+          content: TextField(
+            onChanged: (value) => archiveName = value,
+            decoration: const InputDecoration(hintText: 'Enter archive name'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                if (archiveName.isNotEmpty) {
+                  Navigator.of(context).pop();
+                  _performArchive(selectedRides, archiveName);
+                }
+              },
+              child: const Text('Archive'),
+            ),
+          ],
+        );
+      },
     );
   }
 
-  Future<void> _performArchive() async {
+  Future<void> _performArchive(Set<int> selectedIndices, String name) async {
     final dir = await getApplicationDocumentsDirectory();
-    final files = dir
-        .listSync()
-        .where((f) => f.path.endsWith('.json') && !f.path.contains('archive_'))
-        .toList();
-    if (files.isEmpty) return;
+    List<dynamic> toArchive = selectedIndices.map((i) => rides[i]).toList();
+    print("📦 Archiving ${toArchive.length} rides");
+    if (toArchive.isEmpty) return;
     List<dynamic> data = [];
-    for (var f in files) {
-      data.add(jsonDecode(await File(f.path).readAsString()));
-      await f.delete();
+    for (var ride in toArchive) {
+      data.add(ride);
+      if (ride.containsKey('filePath')) {
+        await File(ride['filePath']).delete();
+        print("🗑️ Deleted ride file: ${ride['filePath'].split(Platform.pathSeparator).last}");
+      }
     }
-    final name =
-        "archive_${DateFormat('yyyy_MM_dd_HHmm').format(DateTime.now())}.json";
-    await File('${dir.path}/$name').writeAsString(jsonEncode(data));
-    reload();
+    final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+    final fileName = "archive_${name}_${timestamp}.json";
+    final file = File('${dir.path}/$fileName');
+    print("💾 Saving archive to: ${file.path}");
+    try {
+      await file.writeAsString(jsonEncode(data));
+      print("💾 Saved archive: $fileName with ${data.length} rides");
+      print("File exists: ${file.existsSync()}");
+    } catch (e) {
+      print("❌ Save archive error: $e");
+    }
+    setState(() {
+      isSelectionMode = false;
+      selectedRides.clear();
+    });
+    await Future.delayed(const Duration(milliseconds: 100));
+    reload(archiveView: true);
+  }
+
+  Future<String?> _showRenameDialog(BuildContext context, String currentName) async {
+    String nameWithoutExt = currentName.replaceAll('.json', '');
+    List<String> parts = nameWithoutExt.split('_');
+    String name = parts.length > 1 ? parts[1] : 'Archive';
+    return showDialog<String>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Rename Archive'),
+          content: TextField(
+            controller: TextEditingController(text: name),
+            onChanged: (value) => name = value,
+            decoration: const InputDecoration(hintText: 'Enter new archive name'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(name),
+              child: const Text('Rename'),
+            ),
+          ],
+        );
+      },
+    );
   }
 }
 
-class RideDetailsPage extends StatelessWidget {
+class RideDetailsPage extends StatefulWidget {
   final Map<String, dynamic> rideData;
   const RideDetailsPage({super.key, required this.rideData});
 
   @override
-  Widget build(BuildContext context) {
-    List<LatLng> route = [];
-    if (rideData['route'] != null) {
-      for (var p in rideData['route']) {
+  State<RideDetailsPage> createState() => _RideDetailsPageState();
+}
+
+class _RideDetailsPageState extends State<RideDetailsPage> {
+  late List<LatLng> route;
+  late List<double> segmentSpeeds;
+  late List<LatLng> stops;
+  final MapController _mapController = MapController();
+
+  Color _colorForSpeed(double speedKmH) {
+    if (speedKmH <= 10.0) return Colors.red;
+    if (speedKmH <= 30.0) return Colors.yellow;
+    if (speedKmH <= 70.0) return Colors.green;
+    return Colors.yellow;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    route = [];
+    if (widget.rideData['route'] != null) {
+      for (var p in widget.rideData['route']) {
         route.add(LatLng(p[0], p[1]));
       }
     }
+    segmentSpeeds = [];
+    if (widget.rideData['segmentSpeeds'] != null) {
+      segmentSpeeds = List<double>.from((widget.rideData['segmentSpeeds'] as List).map((e) => (e as num).toDouble()));
+    }
+    stops = [];
+    if (widget.rideData['stops'] != null) {
+      for (var p in widget.rideData['stops']) {
+        stops.add(LatLng(p[0], p[1]));
+      }
+    }
 
+    if (route.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _fitBounds();
+      });
+    }
+  }
+
+  void _fitBounds() {
+    if (route.isEmpty) return;
+    double minLat = route.map((p) => p.latitude).reduce(min);
+    double maxLat = route.map((p) => p.latitude).reduce(max);
+    double minLng = route.map((p) => p.longitude).reduce(min);
+    double maxLng = route.map((p) => p.longitude).reduce(max);
+
+    LatLngBounds bounds = LatLngBounds(
+      LatLng(minLat, minLng),
+      LatLng(maxLat, maxLng),
+    );
+    _mapController.fitCamera(
+      CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(50)),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
           title: const Text("RIDE DETAILS"), backgroundColor: Colors.black),
@@ -555,17 +905,77 @@ class RideDetailsPage extends StatelessWidget {
                     child: Text("No path recorded",
                         style: TextStyle(color: Colors.white24)))
                 : FlutterMap(
+                    mapController: _mapController,
                     options: MapOptions(
-                        initialCenter: route.first, initialZoom: 15.0),
+                      initialCenter: route.first,
+                      initialZoom: 15.0,
+                    ),
                     children: [
                       TileLayer(
-                          urlTemplate:
-                              'https://tile.openstreetmap.org/{z}/{x}/{y}.png'),
+                        urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        tileProvider: NetworkTileProvider(
+                          headers: {'User-Agent': 'RideTracker/1.0'},
+                        ),
+                      ),
+                      MarkerLayer(
+                        markers: [
+                          // Start marker
+                          Marker(
+                            point: route.first,
+                            width: 30,
+                            height: 30,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.green,
+                                shape: BoxShape.circle,
+                                border: Border.all(color: Colors.white, width: 2),
+                              ),
+                              child: const Icon(Icons.play_arrow, color: Colors.white, size: 16),
+                            ),
+                          ),
+                          // End marker
+                          Marker(
+                            point: route.last,
+                            width: 30,
+                            height: 30,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.red,
+                                shape: BoxShape.circle,
+                                border: Border.all(color: Colors.white, width: 2),
+                              ),
+                              child: const Icon(Icons.stop, color: Colors.white, size: 16),
+                            ),
+                          ),
+                          // Stop markers
+                          ...stops.map((stopPoint) => Marker(
+                            point: stopPoint,
+                            width: 24,
+                            height: 24,
+                            child: const Icon(Icons.location_on, color: Colors.red),
+                          )),
+                        ],
+                      ),
                       PolylineLayer(polylines: [
-                        Polyline(
-                            points: route,
-                            color: Colors.orangeAccent,
-                            strokeWidth: 5.0),
+                        if (segmentSpeeds.isNotEmpty && route.length > 1)
+                          for (int i = 1; i <= min(segmentSpeeds.length, route.length - 1); i++) ...[
+                            if (segmentSpeeds[i - 1] > 70)
+                              Polyline(
+                                points: [route[i - 1], route[i]],
+                                color: Colors.black,
+                                strokeWidth: 7.0,
+                              ),
+                            Polyline(
+                              points: [route[i - 1], route[i]],
+                              color: _colorForSpeed(segmentSpeeds[i - 1]),
+                              strokeWidth: 5.0,
+                            ),
+                          ]
+                        else
+                          Polyline(
+                              points: route,
+                              color: Colors.orangeAccent,
+                              strokeWidth: 5.0),
                       ]),
                     ],
                   ),
@@ -583,9 +993,9 @@ class RideDetailsPage extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
           _detailTile("DISTANCE",
-              "${(rideData['distance'] / 1000).toStringAsFixed(2)}", "KM"),
-          _detailTile("TIME", rideData['duration'], ""),
-          _detailTile("TOP", rideData['topSpeed'].toStringAsFixed(1), "KM/H"),
+              "${(widget.rideData['distance'] / 1000).toStringAsFixed(2)}", "KM"),
+          _detailTile("TIME", widget.rideData['duration'], ""),
+          _detailTile("TOP", widget.rideData['topSpeed'].toStringAsFixed(1), "KM/H"),
         ],
       ),
     );
