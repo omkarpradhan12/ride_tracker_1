@@ -15,35 +15,48 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.x'
           channel: 'stable'
+          cache: true
+
+      - name: Cache Gradle packages
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
 
       - name: Install dependencies
         run: flutter pub get
 
       - name: Build Android release APK
-        run: flutter build apk --release
+        run: flutter build apk --release --no-daemon
 
-      - name: Create GitHub release
+      - name: Create and Upload Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          # Ensure this path matches the default Flutter output path
+          files: build/app/outputs/flutter-apk/app-release.apk
           body: |
             Automated release created from tag `${{ github.ref_name }}`.
 
-            Build artifacts include the Android release APK.
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload release APK
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ride_tracker.apk
-          asset_path: build/app/outputs/flutter-apk/app-release.apk
+            ### Artifacts
+            * **ride_tracker.apk**: The Android release build.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

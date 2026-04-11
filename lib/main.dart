@@ -251,6 +251,7 @@ class _GPSDashboardState extends State<GPSDashboard>
   // ── State ──────────────────────────────────────────────────
   bool isTracking = false;
   bool isPaused = false;
+  bool isStopping = false;
 
   double topSpeed = 0.0;
   double totalDistance = 0.0;
@@ -406,14 +407,45 @@ class _GPSDashboardState extends State<GPSDashboard>
   }
 
   Future<void> stopRide() async {
-    if (!isTracking) return;
-    await _positionStream?.cancel();
+    if (!isTracking || isStopping) return;
+
+    if (mounted) {
+      setState(() {
+        isStopping = true;
+      });
+    }
+
+    final subscription = _positionStream;
     _positionStream = null;
+    try {
+      await subscription?.cancel();
+    } catch (e) {
+      debugPrint('❌ Position stream cancel failed: $e');
+    }
+
     _stopwatch.stop();
     _uiTimer?.cancel();
-    await RideNotificationService.instance.dismiss();
-    await _saveRide();
-    if (mounted) setState(() { isTracking = false; isPaused = false; });
+
+    try {
+      await RideNotificationService.instance.dismiss();
+    } catch (e) {
+      debugPrint('❌ Notification dismiss failed: $e');
+    }
+
+    try {
+      await _saveRide();
+    } catch (e) {
+      debugPrint('❌ Save ride failed: $e');
+    }
+
+    if (mounted) {
+      setState(() {
+        isTracking = false;
+        isPaused = false;
+        isStopping = false;
+      });
+    }
+
     debugPrint("🛑 Tracking Stopped");
   }
 
@@ -534,17 +566,9 @@ class _GPSDashboardState extends State<GPSDashboard>
               // Photo markers
               ..._ridePhotos.map((p) => Marker(
                     point: LatLng(p.latitude, p.longitude),
-                    width: 32,
-                    height: 32,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.deepPurpleAccent,
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white, width: 2),
-                      ),
-                      child: const Icon(Icons.photo_camera,
-                          color: Colors.white, size: 16),
-                    ),
+                    width: 54,
+                    height: 64,
+                    child: _photoMarker(p),
                   )),
               // Current position dot
               Marker(
@@ -593,6 +617,54 @@ class _GPSDashboardState extends State<GPSDashboard>
         ),
         child: Icon(icon, color: Colors.white, size: 16),
       );
+
+  Widget _photoMarker(RidePhoto photo) {
+    return SizedBox(
+      width: 54,
+      height: 64,
+      child: Stack(
+        alignment: Alignment.topCenter,
+        children: [
+          Positioned(
+            bottom: 0,
+            child: Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: Colors.orangeAccent,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 2),
+              ),
+              child: const Icon(Icons.photo, color: Colors.black, size: 22),
+            ),
+          ),
+          Positioned(
+            top: 0,
+            child: Container(
+              width: 50,
+              height: 42,
+              decoration: BoxDecoration(
+                color: Colors.black,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.white, width: 2),
+              ),
+              clipBehavior: Clip.hardEdge,
+              child: Image.file(
+                File(photo.filePath),
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(
+                  color: Colors.deepPurpleAccent,
+                  alignment: Alignment.center,
+                  child: const Icon(Icons.photo_camera,
+                      color: Colors.white, size: 16),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   // ── Stat panel ───────────────────────────────────────────────
   Widget _buildStatPanel() {
@@ -704,7 +776,7 @@ class _GPSDashboardState extends State<GPSDashboard>
                 _iconActionButton(
                   icon: Icons.photo_camera,
                   color: Colors.deepPurpleAccent,
-                  onPressed: _capturePhoto,
+                  onPressed: isStopping ? null : _capturePhoto,
                   tooltip: "Photo",
                   badge: _ridePhotos.isNotEmpty
                       ? "${_ridePhotos.length}"
@@ -727,7 +799,11 @@ class _GPSDashboardState extends State<GPSDashboard>
                               ? Colors.blueAccent
                               : Colors.white12),
                     ),
-                    onPressed: isPaused ? _resumeRide : () => _pauseRide(),
+                    onPressed: isStopping
+                        ? null
+                        : isPaused
+                            ? _resumeRide
+                            : () => _pauseRide(),
                     icon: Icon(
                         isPaused ? Icons.play_arrow : Icons.pause,
                         color: Colors.white),
@@ -750,10 +826,20 @@ class _GPSDashboardState extends State<GPSDashboard>
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(15)),
                     ),
-                    onPressed: stopRide,
-                    icon: const Icon(Icons.stop, color: Colors.white),
-                    label: const Text("FINISH",
-                        style: TextStyle(
+                    onPressed: isStopping ? null : stopRide,
+                    icon: isStopping
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.stop, color: Colors.white),
+                    label: Text(
+                        isStopping ? "STOPPING..." : "FINISH",
+                        style: const TextStyle(
                             color: Colors.white,
                             fontSize: 16,
                             fontWeight: FontWeight.bold)),
@@ -767,7 +853,7 @@ class _GPSDashboardState extends State<GPSDashboard>
   Widget _iconActionButton({
     required IconData icon,
     required Color color,
-    required VoidCallback onPressed,
+    VoidCallback? onPressed,
     required String tooltip,
     String? badge,
   }) {
@@ -1423,10 +1509,23 @@ class _RideDetailsPageState extends State<RideDetailsPage> {
 
   void _fitBounds() {
     if (route.isEmpty) return;
+
+    if (route.length == 1) {
+      _mapController.move(route.first, 16.0);
+      return;
+    }
+
     final minLat = route.map((p) => p.latitude).reduce(min);
     final maxLat = route.map((p) => p.latitude).reduce(max);
     final minLng = route.map((p) => p.longitude).reduce(min);
     final maxLng = route.map((p) => p.longitude).reduce(max);
+
+    // Guard against degenerate bounds that can resolve to NaN/Infinity.
+    if (minLat == maxLat && minLng == maxLng) {
+      _mapController.move(route.first, 16.0);
+      return;
+    }
+
     _mapController.fitCamera(
       CameraFit.bounds(
         bounds: LatLngBounds(
@@ -1565,19 +1664,11 @@ class _RideDetailsPageState extends State<RideDetailsPage> {
             // Photo pins
             ...photos.map((p) => Marker(
                   point: LatLng(p.latitude, p.longitude),
-                  width: 32,
-                  height: 32,
+                  width: 54,
+                  height: 64,
                   child: GestureDetector(
                     onTap: () => setState(() => _selectedPhoto = p),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.deepPurpleAccent,
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white, width: 2),
-                      ),
-                      child: const Icon(Icons.photo_camera,
-                          color: Colors.white, size: 16),
-                    ),
+                    child: _photoMarker(p),
                   ),
                 )),
           ],
@@ -1617,6 +1708,54 @@ class _RideDetailsPageState extends State<RideDetailsPage> {
         ),
         child: Icon(icon, color: Colors.white, size: 16),
       );
+
+  Widget _photoMarker(RidePhoto photo) {
+    return SizedBox(
+      width: 54,
+      height: 64,
+      child: Stack(
+        alignment: Alignment.topCenter,
+        children: [
+          Positioned(
+            bottom: 0,
+            child: Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: Colors.orangeAccent,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 2),
+              ),
+              child: const Icon(Icons.photo, color: Colors.black, size: 22),
+            ),
+          ),
+          Positioned(
+            top: 0,
+            child: Container(
+              width: 50,
+              height: 42,
+              decoration: BoxDecoration(
+                color: Colors.black,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.white, width: 2),
+              ),
+              clipBehavior: Clip.hardEdge,
+              child: Image.file(
+                File(photo.filePath),
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(
+                  color: Colors.deepPurpleAccent,
+                  alignment: Alignment.center,
+                  child: const Icon(Icons.photo_camera,
+                      color: Colors.white, size: 16),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildPhotoStrip() {
     return Container(
