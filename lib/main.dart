@@ -15,15 +15,16 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_colorpicker/flutter_colorpicker.dart';
+import 'models/speed_settings.dart';
+import 'services/settings_service.dart';
 
 // ─────────────────────────────────────────────
 // Speed color scheme — Motorcycle-tuned palette
 // ─────────────────────────────────────────────
+// Use current settings from SettingsService
 Color colorForSpeed(double speedKmH) {
-  if (speedKmH <= 30.0) return const Color(0xFFFFD700);  // Gold  — Slow/Traffic
-  if (speedKmH <= 55.0) return const Color(0xFF4CAF50);  // Green — Urban Cruising
-  if (speedKmH <= 75.0) return const Color(0xFFFF8C00);  // Dark Orange — High Speed
-  return const Color(0xFFE60000);                         // Electric Red — Aggressive
+  return SettingsService.instance.getColorForSpeed(speedKmH);
 }
 
 // ──────────────────────────────────────
@@ -162,6 +163,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await RideNotificationService.instance.init();
   RideNotificationService.instance.listenBackgroundChannel();
+  await SettingsService.instance.init();
   runApp(const MaterialApp(
     home: MainNavigation(),
     debugShowCheckedModeBanner: false,
@@ -217,6 +219,7 @@ class _MainNavigationState extends State<MainNavigation> {
         children: [
           GPSDashboard(key: _gpsDashboardKey),
           HistoryPage(key: _historyKey),
+          const SettingsPage(),
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(
@@ -232,6 +235,7 @@ class _MainNavigationState extends State<MainNavigation> {
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.bolt), label: "Live"),
           BottomNavigationBarItem(icon: Icon(Icons.history), label: "Logs"),
+          BottomNavigationBarItem(icon: Icon(Icons.settings), label: "Settings"),
         ],
       ),
     );
@@ -255,7 +259,6 @@ class _GPSDashboardState extends State<GPSDashboard>
 
   double topSpeed = 0.0;
   double totalDistance = 0.0;
-  double _currentSpeedKmH = 0.0;
 
   final List<LatLng> _routePoints = [];
   final List<double> _routeSegmentSpeeds = [];
@@ -295,7 +298,7 @@ class _GPSDashboardState extends State<GPSDashboard>
       final status = await Permission.locationWhenInUse.request();
       if (!status.isGranted) return;
       final position = await Geolocator.getCurrentPosition(
-          desiredAccuracy: LocationAccuracy.high);
+          locationSettings: const LocationSettings(accuracy: LocationAccuracy.high));
       if (!mounted) return;
       setState(() {
         _currentLocation = LatLng(position.latitude, position.longitude);
@@ -329,7 +332,6 @@ class _GPSDashboardState extends State<GPSDashboard>
     if (pos.accuracy > 25) return;
 
     setState(() {
-      _currentSpeedKmH = speedKmH;
       if (speedKmH > topSpeed) topSpeed = speedKmH;
 
       if (_routePoints.isNotEmpty) {
@@ -371,7 +373,6 @@ class _GPSDashboardState extends State<GPSDashboard>
       _ridePhotos.clear();
       totalDistance = 0.0;
       topSpeed = 0.0;
-      _currentSpeedKmH = 0.0;
       _elapsedTime = "00:00:00";
       _stopwatch = Stopwatch()
         ..reset()
@@ -486,7 +487,7 @@ class _GPSDashboardState extends State<GPSDashboard>
       );
 
       setState(() => _ridePhotos.add(ridePhoto));
-      debugPrint("📸 Photo saved: $fileName at ${_currentLocation}");
+      debugPrint("📸 Photo saved: $fileName at $_currentLocation");
     } catch (e) {
       debugPrint("❌ Photo capture error: $e");
     }
@@ -678,7 +679,7 @@ class _GPSDashboardState extends State<GPSDashboard>
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 6),
-              color: Colors.blueAccent.withOpacity(0.2),
+              color: Colors.blueAccent.withValues(alpha: 0.2),
               child: const Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -717,33 +718,45 @@ class _GPSDashboardState extends State<GPSDashboard>
   }
 
   Widget _buildSpeedLegend() {
-    final segments = [
-      (const Color(0xFFFFD700), "0–30"),
-      (const Color(0xFF4CAF50), "31–55"),
-      (const Color(0xFFFF8C00), "56–75"),
-      (const Color(0xFFE60000), "75+"),
-    ];
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: segments
-          .map((s) => Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6),
-                child: Row(
-                  children: [
-                    Container(
-                        width: 12,
-                        height: 4,
-                        decoration: BoxDecoration(
-                            color: s.$1,
-                            borderRadius: BorderRadius.circular(2))),
-                    const SizedBox(width: 4),
-                    Text(s.$2,
-                        style: const TextStyle(
-                            color: Colors.white38, fontSize: 9)),
-                  ],
-                ),
-              ))
-          .toList(),
+    return ListenableBuilder(
+      listenable: SettingsService.instance,
+      builder: (context, _) {
+        final ranges = SettingsService.instance.ranges;
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: ranges.asMap().entries.map((entry) {
+            final i = entry.key;
+            final r = entry.value;
+            String label;
+            if (i == 0) {
+              label = "0–${r.threshold.toInt()}";
+            } else if (i == ranges.length - 1) {
+              label = "${ranges[i - 1].threshold.toInt()}+";
+            } else {
+              label = "${ranges[i - 1].threshold.toInt() + 1}–${r.threshold.toInt()}";
+            }
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              child: Row(
+                children: [
+                  Container(
+                    width: 12,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: r.color,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(label,
+                      style: const TextStyle(
+                          color: Colors.white38, fontSize: 9)),
+                ],
+              ),
+            );
+          }).toList(),
+        );
+      },
     );
   }
 
@@ -865,10 +878,10 @@ class _GPSDashboardState extends State<GPSDashboard>
         children: [
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-              backgroundColor: color.withOpacity(0.2),
+              backgroundColor: color.withValues(alpha: 0.2),
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(15),
-                  side: BorderSide(color: color.withOpacity(0.6))),
+                  side: BorderSide(color: color.withValues(alpha: 0.6))),
               padding: EdgeInsets.zero,
             ),
             onPressed: onPressed,
@@ -1192,8 +1205,11 @@ class HistoryPageState extends State<HistoryPage> {
                   IconButton(
                     icon: const Icon(Icons.edit, color: Colors.white54),
                     onPressed: () async {
+                      final nameWithoutExt = ride['fileName'].replaceAll('.json', '') as String;
+                      final parts = nameWithoutExt.split('_');
+                      final currentDisplayName = parts.length > 1 ? parts[1] : 'Archive';
                       final newName = await _showRenameDialog(
-                          context, ride['fileName'] as String);
+                          context, "Rename Archive", currentDisplayName);
                       if (newName != null && newName.isNotEmpty) {
                         final dir = await getApplicationDocumentsDirectory();
                         final oldPath =
@@ -1258,11 +1274,23 @@ class HistoryPageState extends State<HistoryPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  if (ride['name'] != null && (ride['name'] as String).isNotEmpty) ...[
+                    Text(
+                      (ride['name'] as String).toUpperCase(),
+                      style: const TextStyle(
+                        color: Colors.orangeAccent,
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                  ],
                   Text(
                       DateFormat('yyyy-MM-dd : hh:mm a')
                           .format(DateTime.parse(ride['date'] as String)),
                       style:
-                          const TextStyle(color: Colors.grey, fontSize: 12)),
+                          const TextStyle(color: Colors.grey, fontSize: 11)),
                   const SizedBox(height: 8),
                   Row(
                     children: [
@@ -1314,6 +1342,7 @@ class HistoryPageState extends State<HistoryPage> {
                 icon: const Icon(Icons.more_vert, color: Colors.white54),
                 color: const Color(0xFF2A2A2A),
                 onSelected: (value) {
+                  if (value == 'rename') _renameRide(Map<String, dynamic>.from(ride));
                   if (value == 'share_file') _shareRideFile(Map<String, dynamic>.from(ride));
                   if (value == 'share_gpx') _shareGpxRoute(Map<String, dynamic>.from(ride));
                   if (value == 'delete') {
@@ -1323,7 +1352,14 @@ class HistoryPageState extends State<HistoryPage> {
                 },
                 itemBuilder: (_) => [
                   const PopupMenuItem(
-                    value: 'share_file',
+                    value: 'rename',
+                    child: Row(children: [
+                      Icon(Icons.edit_outlined, color: Colors.orangeAccent, size: 18),
+                      SizedBox(width: 10),
+                      Text("Rename Ride", style: TextStyle(color: Colors.white)),
+                    ]),
+                  ),
+                  const PopupMenuItem(
                     child: Row(children: [
                       Icon(Icons.file_upload_outlined, color: Colors.orangeAccent, size: 18),
                       SizedBox(width: 10),
@@ -1411,38 +1447,63 @@ class HistoryPageState extends State<HistoryPage> {
     try {
       await file.writeAsString(jsonEncode(toArchive));
     } catch (e) {
-      debugPrint("❌ Save archive error: $e");
+      debugPrint("❌ Archive write failed: $e");
     }
+    reload();
+  }
 
-    setState(() { isSelectionMode = false; selectedRides.clear(); });
-    await Future.delayed(const Duration(milliseconds: 100));
-    reload(archiveView: true);
+  Future<void> _renameRide(Map<String, dynamic> ride) async {
+    final currentName = ride['name'] as String? ?? '';
+    final newName = await _showRenameDialog(context, "Rename Ride", currentName);
+    if (newName == null || newName.isEmpty) return;
+
+    try {
+      final filePath = ride['filePath'] as String;
+      final file = File(filePath);
+      final Map<String, dynamic> data = jsonDecode(await file.readAsString());
+      data['name'] = newName;
+      await file.writeAsString(jsonEncode(data));
+      reload();
+    } catch (e) {
+      debugPrint("❌ Error renaming ride: $e");
+    }
   }
 
   Future<String?> _showRenameDialog(
-      BuildContext context, String currentName) async {
-    final nameWithoutExt = currentName.replaceAll('.json', '');
-    final parts = nameWithoutExt.split('_');
-    String name = parts.length > 1 ? parts[1] : 'Archive';
+      BuildContext context, String title, String currentName) async {
     return showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Rename Archive'),
-        content: TextField(
-          controller: TextEditingController(text: name),
-          onChanged: (v) => name = v,
-          decoration:
-              const InputDecoration(hintText: 'Enter new archive name'),
-        ),
-        actions: [
-          TextButton(
+      builder: (ctx) {
+        String input = currentName;
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          title: Text(title, style: const TextStyle(color: Colors.white)),
+          content: TextField(
+            autofocus: true,
+            style: const TextStyle(color: Colors.white),
+            decoration: InputDecoration(
+              hintText: 'Enter new name',
+              hintStyle: const TextStyle(color: Colors.white24),
+              enabledBorder: const UnderlineInputBorder(
+                  borderSide: BorderSide(color: Colors.white24)),
+              focusedBorder: const UnderlineInputBorder(
+                  borderSide: BorderSide(color: Colors.orangeAccent)),
+            ),
+            controller: TextEditingController(text: currentName),
+            onChanged: (v) => input = v,
+          ),
+          actions: [
+            TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Cancel')),
-          TextButton(
-              onPressed: () => Navigator.of(ctx).pop(name),
-              child: const Text('Rename')),
-        ],
-      ),
+              child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(input),
+              child: const Text('Rename', style: TextStyle(color: Colors.orangeAccent)),
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -1578,7 +1639,11 @@ class _RideDetailsPageState extends State<RideDetailsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("RIDE DETAILS"),
+        title: Text(
+          (widget.rideData['name'] as String? ?? "RIDE DETAILS")
+              .toUpperCase(),
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+        ),
         backgroundColor: Colors.black,
         actions: [
           PopupMenuButton<String>(
@@ -1864,4 +1929,260 @@ class _RideDetailsPageState extends State<RideDetailsPage> {
               style: const TextStyle(
                   color: Colors.orangeAccent, fontSize: 10)),
       ]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SETTINGS PAGE
+// ─────────────────────────────────────────────────────────────────────────────
+class SettingsPage extends StatefulWidget {
+  const SettingsPage({super.key});
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  late List<SpeedRange> _tempRanges;
+
+  @override
+  void initState() {
+    super.initState();
+    _tempRanges = List.from(SettingsService.instance.ranges);
+  }
+
+  void _pickColor(int index) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        Color color = _tempRanges[index].color;
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          title: const Text("Pick Color", style: TextStyle(color: Colors.white)),
+          content: SingleChildScrollView(
+            child: ColorPicker(
+              pickerColor: color,
+              onColorChanged: (c) => color = c,
+              enableAlpha: false,
+              displayThumbColor: true,
+              pickerAreaHeightPercent: 0.7,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("Cancel", style: TextStyle(color: Colors.white24)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                setState(() {
+                  _tempRanges[index] = SpeedRange(
+                    threshold: _tempRanges[index].threshold,
+                    color: color,
+                  );
+                });
+                Navigator.pop(context);
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.orangeAccent),
+              child: const Text("Select", style: TextStyle(color: Colors.black)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: const Text("SPEED COLOR SETTINGS",
+            style: TextStyle(
+                fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 2)),
+        backgroundColor: const Color(0xFF121212),
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: "Reset to defaults",
+            onPressed: () {
+              setState(() {
+                _tempRanges = [
+                  SpeedRange(threshold: 30.0, color: const Color(0xFFFFD700)),
+                  SpeedRange(threshold: 55.0, color: const Color(0xFF4CAF50)),
+                  SpeedRange(threshold: 75.0, color: const Color(0xFFFF8C00)),
+                  SpeedRange(threshold: 999.0, color: const Color(0xFFE60000)),
+                ];
+              });
+            },
+          )
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _addThreshold,
+        backgroundColor: Colors.orangeAccent,
+        child: const Icon(Icons.add, color: Colors.black),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          const Text(
+            "Configure how the ride path is colored based on your speed.",
+            style: TextStyle(color: Colors.white54, fontSize: 13),
+          ),
+          const SizedBox(height: 30),
+          ..._tempRanges.asMap().entries.map((entry) {
+            final i = entry.key;
+            final r = entry.value;
+            final isLast = i == _tempRanges.length - 1;
+
+            return Container(
+              margin: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                borderRadius: BorderRadius.circular(15),
+              ),
+              child: Row(
+                children: [
+                  GestureDetector(
+                    onTap: () => _pickColor(i),
+                    child: Container(
+                      width: 45,
+                      height: 45,
+                      decoration: BoxDecoration(
+                        color: r.color,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 2),
+                      ),
+                      child: const Icon(Icons.colorize, color: Colors.black26, size: 20),
+                    ),
+                  ),
+                  const SizedBox(width: 20),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isLast ? "SPEED ABOVE" : "UP TO SPEED",
+                          style: const TextStyle(color: Colors.grey, fontSize: 10),
+                        ),
+                        if (isLast)
+                          Text(
+                            "${_tempRanges[i - 1].threshold.toInt()} KM/H +",
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold),
+                          )
+                        else
+                          Row(
+                            children: [
+                              SizedBox(
+                                width: 60,
+                                child: TextField(
+                                  keyboardType: TextInputType.number,
+                                  style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold),
+                                  decoration: const InputDecoration(
+                                    isDense: true,
+                                    border: InputBorder.none,
+                                  ),
+                                  controller: TextEditingController(
+                                      text: r.threshold.toInt().toString())
+                                    ..selection = TextSelection.fromPosition(
+                                        TextPosition(
+                                            offset: r.threshold
+                                                .toInt()
+                                                .toString()
+                                                .length)),
+                                  onChanged: (val) {
+                                    final d = double.tryParse(val);
+                                    if (d != null) {
+                                      _tempRanges[i] = SpeedRange(
+                                          threshold: d, color: r.color);
+                                    }
+                                  },
+                                ),
+                              ),
+                              const Text("KM/H",
+                                  style: TextStyle(
+                                      color: Colors.white24, fontSize: 12)),
+                            ],
+                          ),
+                      ],
+                    ),
+                  ),
+                  if (!isLast && _tempRanges.length > 2)
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline,
+                          color: Colors.redAccent, size: 20),
+                      onPressed: () => _removeThreshold(i),
+                    ),
+                ],
+              ),
+            );
+          }),
+          const SizedBox(height: 20),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orangeAccent,
+              minimumSize: const Size(double.infinity, 55),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(15)),
+            ),
+            onPressed: () async {
+              // Simple validation: ensure increasing thresholds
+              for (int i = 0; i < _tempRanges.length - 2; i++) {
+                if (_tempRanges[i].threshold >= _tempRanges[i + 1].threshold) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("Speed ranges must be in increasing order")),
+                  );
+                  return;
+                }
+              }
+              await SettingsService.instance.saveRanges(_tempRanges);
+              if (!context.mounted) return;
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text("Settings saved successfully")),
+                );
+              }
+            },
+            child: const Text("SAVE SETTINGS",
+                style: TextStyle(
+                    color: Colors.black,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1)),
+          ),
+          const SizedBox(height: 40),
+        ],
+      ),
+    );
+  }
+
+  void _addThreshold() {
+    setState(() {
+      final lastIdx = _tempRanges.length - 1;
+      final prevVal = _tempRanges[lastIdx - 1].threshold;
+      final newVal = prevVal + 20.0;
+
+      _tempRanges.insert(
+        lastIdx,
+        SpeedRange(
+          threshold: newVal,
+          color: Colors.primaries[(_tempRanges.length * 3) % Colors.primaries.length],
+        ),
+      );
+    });
+  }
+
+  void _removeThreshold(int index) {
+    if (_tempRanges.length <= 2) return;
+    setState(() {
+      _tempRanges.removeAt(index);
+    });
+  }
 }
