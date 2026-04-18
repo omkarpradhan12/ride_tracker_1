@@ -1,4 +1,4 @@
-name: Post-Merge Release and Cleanup
+name: Release APK on Merge
 
 on:
   pull_request:
@@ -7,14 +7,29 @@ on:
       - main
 
 jobs:
-  release_and_cleanup:
-    # Only run this if the PR was actually merged (not just closed)
+  release:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Extract Tag from PR Description
+        id: get_tag
+        run: |
+          # Look for 'tr#' followed by digits and dots in the PR body
+          # Example: tr#2.0.0 -> 2.0.0
+          TAG=$(echo "${{ github.event.pull_request.body }}" | grep -oP 'tr#\K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          
+          if [ -z "$TAG" ]; then
+            echo "No tag found in PR body (format tr#x.x.x). Using fallback."
+            TAG="v${{ github.run_number }}-no-tag"
+          fi
+          
+          echo "final_tag=$TAG" >> $GITHUB_OUTPUT
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -34,18 +49,12 @@ jobs:
       - name: Build Release APK
         run: flutter build apk --release
 
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
-
-      - name: Delete Feature Branch
-        uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.git.deleteRef({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: `heads/${context.payload.pull_request.head.ref}`
-            })
+          tag_name: ${{ steps.get_tag.outputs.final_tag }}
+          name: Release ${{ steps.get_tag.outputs.final_tag }}
+          draft: false
+          prerelease: false
+          files: build/app/outputs/flutter-apk/app-release.apk
+          generate_release_notes: true
