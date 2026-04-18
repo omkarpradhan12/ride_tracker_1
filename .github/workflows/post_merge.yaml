@@ -8,28 +8,43 @@ on:
 
 jobs:
   release:
+    # Only run if the PR was actually merged and not just closed
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write # Required to post comments
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetches all tags for versioning logic
 
-      - name: Extract Tag from PR Description
+      - name: Determine Version Tag
         id: get_tag
         run: |
-          # Look for 'tr#' followed by digits and dots in the PR body
-          # Example: tr#2.0.0 -> 2.0.0
-          TAG=$(echo "${{ github.event.pull_request.body }}" | grep -oP 'tr#\K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-          
-          if [ -z "$TAG" ]; then
-            echo "No tag found in PR body (format tr#x.x.x). Using fallback."
-            TAG="v${{ github.run_number }}-no-tag"
+          # 1. Try to extract tag from PR body (format tr#x.y.z)
+          BODY_TAG=$(echo "${{ github.event.pull_request.body }}" | grep -oP 'tr#\K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+
+          if [ -n "$BODY_TAG" ]; then
+            echo "Found tag in PR: $BODY_TAG"
+            FINAL_TAG="$BODY_TAG"
+          else
+            echo "No tag found in PR body. Fetching latest release..."
+
+            # 2. Get the latest tag from Git, default to 1.0.0 if none exist
+            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "1.0.0")
+            echo "Latest tag found: $LATEST_TAG"
+
+            # 3. Increment the patch version (the last digit)
+            IFS='.' read -r major minor patch <<< "$LATEST_TAG"
+            NEW_PATCH=$((patch + 1))
+            FINAL_TAG="$major.$minor.$NEW_PATCH"
+            echo "Incremented tag to: $FINAL_TAG"
           fi
-          
-          echo "final_tag=$TAG" >> $GITHUB_OUTPUT
+
+          echo "final_tag=$FINAL_TAG" >> $GITHUB_OUTPUT
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -47,7 +62,10 @@ jobs:
         run: flutter pub get
 
       - name: Build Release APK
-        run: flutter build apk --release
+        run: |
+          flutter build apk --release
+          # Rename the APK to your specific naming convention
+          mv build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/swift_ride_${{ steps.get_tag.outputs.final_tag }}.apk
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -56,5 +74,16 @@ jobs:
           name: Release ${{ steps.get_tag.outputs.final_tag }}
           draft: false
           prerelease: false
-          files: build/app/outputs/flutter-apk/app-release.apk
+          files: build/app/outputs/flutter-apk/swift_ride_${{ steps.get_tag.outputs.final_tag }}.apk
           generate_release_notes: true
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: "🚀 **Release ${{ steps.get_tag.outputs.final_tag }} is ready!**\n\nThe APK **swift_ride_${{ steps.get_tag.outputs.final_tag }}.apk** has been built and uploaded to the [Releases](https://github.com/${{ github.repository }}/releases) page.\n\n✅ Merge completed. You can now delete this branch manually."
+            })
