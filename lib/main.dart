@@ -18,6 +18,8 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'models/speed_settings.dart';
 import 'services/settings_service.dart';
+import 'services/fuel_service.dart';
+import 'pages/fuel_page.dart';
 
 // ─────────────────────────────────────────────
 // Speed color scheme — Motorcycle-tuned palette
@@ -164,6 +166,7 @@ void main() async {
   await RideNotificationService.instance.init();
   RideNotificationService.instance.listenBackgroundChannel();
   await SettingsService.instance.init();
+  await FuelService.instance.init();
   runApp(const MaterialApp(
     home: MainNavigation(),
     debugShowCheckedModeBanner: false,
@@ -219,6 +222,7 @@ class _MainNavigationState extends State<MainNavigation> {
         children: [
           GPSDashboard(key: _gpsDashboardKey),
           HistoryPage(key: _historyKey),
+          const FuelPage(),
           const SettingsPage(),
         ],
       ),
@@ -235,6 +239,7 @@ class _MainNavigationState extends State<MainNavigation> {
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.bolt), label: "Live"),
           BottomNavigationBarItem(icon: Icon(Icons.history), label: "Logs"),
+          BottomNavigationBarItem(icon: Icon(Icons.local_gas_station), label: "Petrol"),
           BottomNavigationBarItem(icon: Icon(Icons.settings), label: "Settings"),
         ],
       ),
@@ -1154,6 +1159,9 @@ class HistoryPageState extends State<HistoryPage> {
               backgroundColor: Colors.orangeAccent,
               child: const Icon(Icons.archive),
             )
+          : null,
+      floatingActionButtonLocation: isSelectionMode
+          ? FloatingActionButtonLocation.centerFloat
           : null,
     );
   }
