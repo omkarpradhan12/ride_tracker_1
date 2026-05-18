@@ -132,32 +132,29 @@ class FuelService extends ChangeNotifier {
     final sortedFills = List<FuelFill>.from(_fills)..sort((a, b) => a.date.compareTo(b.date));
 
     for (int i = 0; i < sortedFills.length; i++) {
-      if (i == 0) {
-        sortedFills[i].mileage = null; // No previous fill to calculate from
-        continue;
-      }
-
       final currentFill = sortedFills[i];
-      final previousFill = sortedFills[i - 1];
+      final startDate = i == 0 ? null : sortedFills[i - 1].date;
 
-      // Sum distance of rides between previousFill.date and currentFill.date
+      // If no earlier fill exists, include all ride distance before this fill date.
+      // This supports backdated first fills and ensures preceding rides are counted.
       double totalDistanceMeters = 0.0;
       for (final ride in rides) {
         final rideDate = DateTime.parse(ride['date'] as String);
-        if (rideDate.isAfter(previousFill.date) && (rideDate.isBefore(currentFill.date) || rideDate.isAtSameMomentAs(currentFill.date))) {
+        final includeRide = startDate == null
+            ? rideDate.isBefore(currentFill.date) || rideDate.isAtSameMomentAs(currentFill.date)
+            : rideDate.isAfter(startDate) && (rideDate.isBefore(currentFill.date) || rideDate.isAtSameMomentAs(currentFill.date));
+        if (includeRide) {
           totalDistanceMeters += (ride['distance'] as num).toDouble();
         }
       }
 
-      if (currentFill.liters > 0) {
+      if (currentFill.liters > 0 && totalDistanceMeters > 0) {
         currentFill.mileage = (totalDistanceMeters / 1000) / currentFill.liters;
       } else {
-        currentFill.mileage = 0.0;
+        currentFill.mileage = null;
       }
     }
 
-    // Update _fills with calculated mileage
-    // (Note: sortedFills and _fills might have different orders, but same objects)
     notifyListeners();
   }
 

@@ -1,3 +1,4 @@
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../services/fuel_service.dart';
@@ -11,6 +12,8 @@ class FuelPage extends StatefulWidget {
 }
 
 class _FuelPageState extends State<FuelPage> {
+  bool _costChartExpanded = false;
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -40,13 +43,14 @@ class _FuelPageState extends State<FuelPage> {
           return Column(
             children: [
               _buildSummaryHeader(service),
+              _buildCostPerLiterPreview(service),
               Expanded(
                 child: fills.isEmpty
                     ? const Center(
                         child: Text("No petrol records yet.",
                             style: TextStyle(color: Colors.white24)))
                     : ListView.builder(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
                         itemCount: fills.length,
                         itemBuilder: (context, index) {
                           return _buildFuelCard(fills[index]);
@@ -98,7 +102,17 @@ class _FuelPageState extends State<FuelPage> {
             const SizedBox(height: 20),
             const Divider(color: Colors.white10),
             const SizedBox(height: 20),
-            _summaryStat("COST/100KM", "₹${service.averageCostPer100Km.toStringAsFixed(0)}", ""),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _summaryStat("COST/L", "₹${service.averageCostPerLiter.toStringAsFixed(2)}", ""),
+                Container(width: 1, height: 40, color: Colors.white10),
+                _summaryStat("COST/100KM", "₹${service.averageCostPer100Km.toStringAsFixed(0)}", ""),
+              ],
+            ),
+          ] else ...[
+            const SizedBox(height: 20),
+            _summaryStat("COST/L", "₹${service.averageCostPerLiter.toStringAsFixed(2)}", ""),
           ]
         ],
       ),
@@ -125,9 +139,83 @@ class _FuelPageState extends State<FuelPage> {
     );
   }
 
+  Widget _buildCostPerLiterPreview(FuelService service) {
+    final fills = service.getCostTrendData();
+    if (fills.length < 2) return const SizedBox.shrink();
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A1A),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.orangeAccent.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: () => setState(() => _costChartExpanded = !_costChartExpanded),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text("Fuel Cost/L Trend",
+                    style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+                Row(
+                  children: [
+                    Text(_costChartExpanded ? "Collapse" : "Expand",
+                        style: const TextStyle(color: Colors.orangeAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+                    const SizedBox(width: 4),
+                    Icon(_costChartExpanded ? Icons.expand_less : Icons.expand_more,
+                        color: Colors.orangeAccent, size: 18),
+                  ],
+                )
+              ],
+            ),
+          ),
+          AnimatedCrossFade(
+            firstChild: const SizedBox.shrink(),
+            secondChild: Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: SizedBox(
+                height: 86,
+                child: CustomPaint(
+                  painter: CostPerLiterChartPainter(
+                    values: fills.map((f) => f.costPerLiter).toList(),
+                    labels: fills.map((f) => DateFormat('MMM d').format(f.date)).toList(),
+                    lineColor: Colors.orangeAccent,
+                  ),
+                  size: const Size(double.infinity, 86),
+                ),
+              ),
+            ),
+            crossFadeState: _costChartExpanded ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+            duration: const Duration(milliseconds: 250),
+          ),
+          if (!_costChartExpanded) ...[
+            const SizedBox(height: 12),
+            GestureDetector(
+              onTap: () => _showCostPerLiterTrendDialog(fills),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: const [
+                  Text("Open full trend",
+                      style: TextStyle(color: Colors.orangeAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+                  SizedBox(width: 4),
+                  Icon(Icons.open_in_new, color: Colors.orangeAccent, size: 16),
+                ],
+              ),
+            ),
+          ]
+        ],
+      ),
+    );
+  }
+
   Widget _buildFuelCard(FuelFill fill) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
+      margin: const EdgeInsets.symmetric(vertical: 6),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: const Color(0xFF1A1A1A),
@@ -237,13 +325,15 @@ class _FuelPageState extends State<FuelPage> {
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
+              scrollable: true,
               backgroundColor: const Color(0xFF1E1E1E),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
               title: const Text("ADD PETROL FILL",
                   style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
                   TextField(
                     controller: litersController,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -291,6 +381,7 @@ class _FuelPageState extends State<FuelPage> {
                   ),
                 ],
               ),
+              ),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context),
@@ -330,13 +421,15 @@ class _FuelPageState extends State<FuelPage> {
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
+              scrollable: true,
               backgroundColor: const Color(0xFF1E1E1E),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
               title: const Text("EDIT PETROL FILL",
                   style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
                   TextField(
                     controller: litersController,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -385,6 +478,7 @@ class _FuelPageState extends State<FuelPage> {
                   ),
                 ],
               ),
+              ),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context),
@@ -413,6 +507,56 @@ class _FuelPageState extends State<FuelPage> {
     );
   }
 
+  void _showCostPerLiterTrendDialog(List<FuelFill> fills) {
+    final service = FuelService.instance;
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text("Fuel Cost per Liter",
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  height: 220,
+                  child: CustomPaint(
+                    painter: CostPerLiterChartPainter(
+                      values: fills.map((f) => f.costPerLiter).toList(),
+                      labels: fills.map((f) => DateFormat('MMM d').format(f.date)).toList(),
+                      lineColor: Colors.orangeAccent,
+                    ),
+                    size: const Size(double.infinity, 220),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  alignment: WrapAlignment.spaceBetween,
+                  spacing: 12,
+                  runSpacing: 8,
+                  children: [
+                    _summaryStat("Avg Cost/L", "₹${service.averageCostPerLiter.toStringAsFixed(2)}", ""),
+                    _summaryStat("Total Cost", "₹${service.totalCostInr.toStringAsFixed(0)}", ""),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("CLOSE", style: TextStyle(color: Colors.orangeAccent)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   void _confirmDelete(FuelFill fill) {
     showDialog(
       context: context,
@@ -434,4 +578,83 @@ class _FuelPageState extends State<FuelPage> {
       ),
     );
   }
+}
+
+class CostPerLiterChartPainter extends CustomPainter {
+  final List<double> values;
+  final List<String> labels;
+  final Color lineColor;
+
+  CostPerLiterChartPainter({
+    required this.values,
+    required this.labels,
+    required this.lineColor,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (values.isEmpty || values.length < 2) return;
+
+    final paint = Paint()
+      ..color = lineColor
+      ..strokeWidth = 2.5
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+
+    final pointPaint = Paint()
+      ..color = lineColor
+      ..style = PaintingStyle.fill;
+
+    final gridPaint = Paint()
+      ..color = Colors.white12
+      ..strokeWidth = 0.5;
+
+    final padding = 24.0;
+    final graphWidth = size.width - padding * 2;
+    final graphHeight = size.height - padding * 2;
+    final maxValue = values.reduce((a, b) => a > b ? a : b);
+    final minValue = values.reduce((a, b) => a < b ? a : b);
+    final range = (maxValue - minValue).abs();
+    final yRange = range > 0 ? range : (maxValue.abs() > 0 ? maxValue.abs() * 0.1 : 1.0);
+
+    for (int i = 0; i <= 3; i++) {
+      final y = padding + (graphHeight / 3) * i;
+      canvas.drawLine(Offset(padding, y), Offset(size.width - padding, y), gridPaint);
+    }
+
+    final points = <Offset>[];
+    for (int i = 0; i < values.length; i++) {
+      final x = padding + (graphWidth / (values.length - 1)) * i;
+      final normalizedY = (values[i] - minValue) / yRange;
+      final y = padding + graphHeight - (graphHeight * normalizedY);
+      points.add(Offset(x, y));
+    }
+
+    final path = Path();
+    for (int i = 0; i < points.length; i++) {
+      if (i == 0) {
+        path.moveTo(points[i].dx, points[i].dy);
+      } else {
+        path.lineTo(points[i].dx, points[i].dy);
+      }
+    }
+    canvas.drawPath(path, paint);
+
+    for (final point in points) {
+      canvas.drawCircle(point, 3.5, pointPaint);
+    }
+
+    final textStyle = const TextStyle(color: Colors.white54, fontSize: 10);
+    for (int i = 0; i < labels.length; i++) {
+      final textSpan = TextSpan(text: labels[i], style: textStyle);
+      final tp = TextPainter(text: textSpan, textDirection: ui.TextDirection.ltr);
+      tp.layout(maxWidth: 60);
+      final x = points[i].dx - tp.width / 2;
+      final y = size.height - padding + 4;
+      tp.paint(canvas, Offset(x, y));
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }
