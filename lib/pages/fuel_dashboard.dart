@@ -4,8 +4,15 @@ import 'dart:ui' as ui;
 import '../services/fuel_service.dart';
 import '../models/fuel_fill.dart';
 
-class FuelDashboard extends StatelessWidget {
+class FuelDashboard extends StatefulWidget {
   const FuelDashboard({super.key});
+
+  @override
+  State<FuelDashboard> createState() => _FuelDashboardState();
+}
+
+class _FuelDashboardState extends State<FuelDashboard> {
+  bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
@@ -15,33 +22,119 @@ class FuelDashboard extends StatelessWidget {
         final service = FuelService.instance;
         final fills = service.getCostTrendData();
 
-        if (service.isLoading || fills.isEmpty) {
-          return SizedBox(
-            height: 400,
-            child: Center(
-              child: fills.isEmpty
-                  ? const Text("No fuel data available", style: TextStyle(color: Colors.white54))
-                  : const CircularProgressIndicator(color: Colors.orangeAccent),
-            ),
-          );
-        }
-
-        return SingleChildScrollView(
-          child: Column(
-            children: [
+        return Column(
+          children: [
+            const SizedBox(height: 20),
+            _buildCollapseHeader(service, fills),
+            if (service.isLoading || fills.isEmpty)
+              SizedBox(
+                height: 260,
+                child: Center(
+                  child: fills.isEmpty
+                      ? const Text("No fuel data available", style: TextStyle(color: Colors.white54))
+                      : const CircularProgressIndicator(color: Colors.orangeAccent),
+                ),
+              )
+            else if (_expanded)
+              SizedBox(
+                height: MediaQuery.of(context).size.height * 0.65,
+                child: SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.only(bottom: 24),
+                  child: Column(
+                    children: [
+                      const SizedBox(height: 20),
+                      _buildStatsGrid(service),
+                      const SizedBox(height: 24),
+                      _buildMileageChart(fills),
+                      const SizedBox(height: 24),
+                      _buildCostChart(fills),
+                      const SizedBox(height: 24),
+                      _buildEfficiencyMetrics(fills),
+                      const SizedBox(height: 24),
+                    ],
+                  ),
+                ),
+              )
+            else
               const SizedBox(height: 20),
-              _buildStatsGrid(service),
-              const SizedBox(height: 24),
-              _buildMileageChart(fills),
-              const SizedBox(height: 24),
-              _buildCostChart(fills),
-              const SizedBox(height: 24),
-              _buildEfficiencyMetrics(fills),
-              const SizedBox(height: 24),
-            ],
-          ),
+          ],
         );
       },
+    );
+  }
+
+  Widget _buildCollapseHeader(FuelService service, List<FuelFill> fills) {
+    final latestKilometers = service.latestDistanceSinceFillKm;
+    final hasMetrics = fills.isNotEmpty && !service.isLoading;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: InkWell(
+        onTap: hasMetrics ? () => setState(() => _expanded = !_expanded) : null,
+        borderRadius: BorderRadius.circular(20),
+        child: Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A1A1A),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: Colors.white10),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text("Fuel Dashboard",
+                        style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    Text(
+                      hasMetrics ? "Tap to ${_expanded ? 'collapse' : 'expand'}" : "No fuel data yet",
+                      style: const TextStyle(color: Colors.white54, fontSize: 12),
+                    ),
+                    if (hasMetrics) ...[
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          _dashboardMetric("KM DRIVEN", latestKilometers.toStringAsFixed(1), "KM"),
+                          const SizedBox(width: 12),
+                          _dashboardMetric("MILEAGE", service.averageMileage.toStringAsFixed(1), "KM/L"),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              Icon(
+                _expanded ? Icons.expand_less : Icons.expand_more,
+                color: Colors.orangeAccent,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _dashboardMetric(String label, String value, String unit) {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(color: Colors.white54, fontSize: 10, letterSpacing: 1)),
+          const SizedBox(height: 4),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(value,
+                  style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+              const SizedBox(width: 4),
+              Text(unit, style: const TextStyle(color: Colors.orangeAccent, fontSize: 12)),
+            ],
+          ),
+        ],
+      ),
     );
   }
 

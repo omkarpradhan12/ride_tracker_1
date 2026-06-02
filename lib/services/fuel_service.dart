@@ -43,6 +43,10 @@ class FuelService extends ChangeNotifier {
     return validFills.map((f) => f.costPer100Km!).reduce((a, b) => a + b) / validFills.length;
   }
 
+  FuelFill? get latestFill => _fills.isNotEmpty ? _fills.first : null;
+
+  double get latestDistanceSinceFillKm => latestFill?.distanceSinceFillKm ?? 0.0;
+
   /// Get last N fuel fills (sorted by date descending)
   List<FuelFill> getLastNFills(int n) {
     return _fills.take(n).toList();
@@ -130,23 +134,23 @@ class FuelService extends ChangeNotifier {
 
     // Sort fills chronologically for calculation
     final sortedFills = List<FuelFill>.from(_fills)..sort((a, b) => a.date.compareTo(b.date));
+    final now = DateTime.now();
 
     for (int i = 0; i < sortedFills.length; i++) {
       final currentFill = sortedFills[i];
-      final startDate = i == 0 ? null : sortedFills[i - 1].date;
+      final endDate = i + 1 < sortedFills.length ? sortedFills[i + 1].date : now;
 
-      // If no earlier fill exists, include all ride distance before this fill date.
-      // This supports backdated first fills and ensures preceding rides are counted.
       double totalDistanceMeters = 0.0;
       for (final ride in rides) {
         final rideDate = DateTime.parse(ride['date'] as String);
-        final includeRide = startDate == null
-            ? rideDate.isBefore(currentFill.date) || rideDate.isAtSameMomentAs(currentFill.date)
-            : rideDate.isAfter(startDate) && (rideDate.isBefore(currentFill.date) || rideDate.isAtSameMomentAs(currentFill.date));
+        final includeRide = (rideDate.isAfter(currentFill.date) || rideDate.isAtSameMomentAs(currentFill.date)) &&
+            (rideDate.isBefore(endDate) || rideDate.isAtSameMomentAs(endDate));
         if (includeRide) {
           totalDistanceMeters += (ride['distance'] as num).toDouble();
         }
       }
+
+      currentFill.distanceSinceFillKm = totalDistanceMeters / 1000;
 
       if (currentFill.liters > 0 && totalDistanceMeters > 0) {
         currentFill.mileage = (totalDistanceMeters / 1000) / currentFill.liters;
