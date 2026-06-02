@@ -4,6 +4,7 @@ class FuelFill {
   final double liters;
   final double costInr;
   double? mileage; // Calculated mileage for this fill (km/L)
+  double? distanceSinceFillKm; // Distance recorded from this fill date until next fill or now
 
   FuelFill({
     required this.id,
@@ -11,6 +12,7 @@ class FuelFill {
     required this.liters,
     required this.costInr,
     this.mileage,
+    this.distanceSinceFillKm,
   });
 
   /// Calculate rupees per liter
@@ -28,6 +30,7 @@ class FuelFill {
         'liters': liters,
         'costInr': costInr,
         'mileage': mileage,
+        'distanceSinceFillKm': distanceSinceFillKm,
       };
 
   factory FuelFill.fromJson(Map<String, dynamic> json) => FuelFill(
@@ -36,6 +39,7 @@ class FuelFill {
         liters: (json['liters'] as num).toDouble(),
         costInr: (json['costInr'] as num?)?.toDouble() ?? 0.0,
         mileage: (json['mileage'] as num?)?.toDouble(),
+        distanceSinceFillKm: (json['distanceSinceFillKm'] as num?)?.toDouble(),
       );
 
   FuelFill copyWith({
@@ -44,6 +48,7 @@ class FuelFill {
     double? liters,
     double? costInr,
     double? mileage,
+    double? distanceSinceFillKm,
   }) {
     return FuelFill(
       id: id ?? this.id,
@@ -51,6 +56,7 @@ class FuelFill {
       liters: liters ?? this.liters,
       costInr: costInr ?? this.costInr,
       mileage: mileage ?? this.mileage,
+      distanceSinceFillKm: distanceSinceFillKm ?? this.distanceSinceFillKm,
     );
   }
 }

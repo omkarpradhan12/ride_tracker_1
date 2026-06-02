@@ -19,6 +19,7 @@ import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'models/speed_settings.dart';
 import 'services/settings_service.dart';
 import 'services/fuel_service.dart';
+import 'services/ride_service.dart';
 import 'pages/fuel_page.dart';
 
 // ─────────────────────────────────────────────
@@ -2166,9 +2167,215 @@ class _SettingsPageState extends State<SettingsPage> {
                     letterSpacing: 1)),
           ),
           const SizedBox(height: 40),
+          const Divider(color: Colors.white24, height: 40),
+          const SizedBox(height: 20),
+          const Text(
+            "RIDE DATA BACKUP & RESTORE",
+            style: TextStyle(
+              color: Colors.orangeAccent,
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1,
+            ),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            "Save all your ride logs to Downloads folder as a backup. Useful before reinstalling the app.",
+            style: TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+          const SizedBox(height: 20),
+          _buildBackupRestoreSection(),
+          const SizedBox(height: 40),
         ],
       ),
     );
+  }
+
+  Widget _buildBackupRestoreSection() {
+    return Column(
+      children: [
+        // Backup button
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.greenAccent,
+            minimumSize: const Size(double.infinity, 50),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          onPressed: () => _createBackup(),
+          icon: const Icon(Icons.cloud_download, color: Colors.black),
+          label: const Text(
+            "CREATE BACKUP",
+            style: TextStyle(
+              color: Colors.black,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1,
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        // Restore button
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.cyan,
+            minimumSize: const Size(double.infinity, 50),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          onPressed: () => _restoreFromBackup(),
+          icon: const Icon(Icons.cloud_upload, color: Colors.black),
+          label: const Text(
+            "RESTORE FROM BACKUP",
+            style: TextStyle(
+              color: Colors.black,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1,
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        // Status message
+        StreamBuilder<String>(
+          stream: _statusStream,
+          initialData: 'Ready for backup/restore',
+          builder: (context, snapshot) {
+            return Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+              ),
+              child: Text(
+                snapshot.data ?? 'Ready',
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 12,
+                ),
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  late final _statusStreamController = StreamController<String>.broadcast();
+  Stream<String> get _statusStream => _statusStreamController.stream;
+
+  Future<void> _createBackup() async {
+    final status = await RideService.instance.createBackup();
+    _statusStreamController.add(status);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(status),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  Future<void> _restoreFromBackup() async {
+    final backupFiles = await RideService.instance.getAvailableBackupFiles();
+    if (backupFiles.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("No backup files found in Downloads")),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1A1A1A),
+          title: const Text(
+            "SELECT BACKUP TO RESTORE",
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: backupFiles.map((file) {
+                final fileName = file.path.split('/').last;
+                final fileSize = file.lengthSync();
+                final fileSizeMB = (fileSize / (1024 * 1024)).toStringAsFixed(2);
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(
+                    fileName,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    '$fileSizeMB MB',
+                    style: const TextStyle(color: Colors.white54, fontSize: 11),
+                  ),
+                  onTap: () async {
+                    Navigator.pop(context);
+                    final confirmResult = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        backgroundColor: const Color(0xFF1A1A1A),
+                        title: const Text(
+                          "Restore Backup?",
+                          style: TextStyle(color: Colors.white),
+                        ),
+                        content: const Text(
+                          "This will restore all rides from the backup. Existing rides with the same date won't be overwritten.",
+                          style: TextStyle(color: Colors.white70),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(ctx, false),
+                            child: const Text("CANCEL"),
+                          ),
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.cyan,
+                            ),
+                            onPressed: () => Navigator.pop(ctx, true),
+                            child: const Text("RESTORE"),
+                          ),
+                        ],
+                      ),
+                    );
+
+                    if (confirmResult == true) {
+                      final status = await RideService.instance.restoreFromBackup(file);
+                      _statusStreamController.add(status);
+                    }
+                  },
+                );
+              }).toList(),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("CLOSE"),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    _statusStreamController.close();
+    super.dispose();
   }
 
   void _addThreshold() {

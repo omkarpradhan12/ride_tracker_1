@@ -89,3 +89,11 @@ classDiagram
 - **Foreground Service**: Ensures tracking continues even when the app is in the background or the screen is off.
 - **Interactive Notification**: Control your ride (Pause/Stop) directly from the Android notification shade.
 - **Quick Actions**: Long-press the app icon to "Start Ride" immediately without navigating the UI.
+
+---
+
+## 📝 Patch Notes
+
+- **v1.2.0** — Improved map rendering stability, refined export and archiving workflows, and fixed background GPS permission handling.
+- **v1.1.0** — Added ride archiving, customizable speed thresholds, and interactive Android notification controls.
+- **v1.0.0** — Launched real-time ride tracking, speed-based heatmap visualization, photo geo-tagging, and GPX/JSON export support.
